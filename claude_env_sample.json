@@ -1,0 +1,53 @@
+{
+    "claudeCode.environmentVariables": [
+        {
+            "name": "ANTHROPIC_BASE_URL",
+            "value": "https://api.deepseek.com/anthropic"
+        },
+        {
+            "name": "ANTHROPIC_AUTH_TOKEN",
+            "value": "sk-a30b94aa72774fa698a7eb399ac803f5"
+        },
+        {
+        "name": "ANTHROPIC_MODEL",
+        "value": "deepseek-v4-pro[1m]"
+        },
+        {
+        "name": "ANTHROPIC_SMALL_FAST_MODEL",
+        "value": "deepseek-v4-flash"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "value": "deepseek-v4-pro[1m]"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+            "value": "deepseek-v4-pro[1m]"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "value": "deepseek-v4-pro[1m]"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+            "value": "deepseek-v4-pro[1m]"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "value": "deepseek-v4-flash"
+        },
+        {
+            "name": "CLAUDE_CODE_SUBAGENT_MODEL",
+            "value": "deepseek-v4-pro[1m]"
+        },
+        {
+            "name": "CLAUDE_CODE_EFFORT_LEVEL",
+            "value": "max"
+        },
+        {
+            "name": "DISABLE_AUTOUPDATER",
+            "value": "1"
+        }
+    ],
+    "claudeCode.preferredLocation": "panel"
+}

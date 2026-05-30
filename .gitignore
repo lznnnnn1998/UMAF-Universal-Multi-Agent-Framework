@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+.claude/
+
+# Research pipeline output files (generated at runtime)
+scoring_report.json
+research_subtopics.json
+research_proposal.tex
+research_*.md
+QAT_*.md
