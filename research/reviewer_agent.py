@@ -94,6 +94,7 @@ Be fair but rigorous. The scoring will determine which proposals go into the fin
         tool_map=TOOL_MAP,
         max_steps=15,
         backend=backend,
+        agent_name="reviewer",
     )
 
     # Parse scores from the scoring report file or from agent output

@@ -6,15 +6,15 @@
         },
         {
             "name": "ANTHROPIC_AUTH_TOKEN",
-            "value": "sk-a30b94aa72774fa698a7eb399ac803f5"
+            "value": "YOUR_DEEPSEEK_API_KEY"
         },
         {
-        "name": "ANTHROPIC_MODEL",
-        "value": "deepseek-v4-pro[1m]"
+            "name": "ANTHROPIC_MODEL",
+            "value": "deepseek-v4-pro[1m]"
         },
         {
-        "name": "ANTHROPIC_SMALL_FAST_MODEL",
-        "value": "deepseek-v4-flash"
+            "name": "ANTHROPIC_SMALL_FAST_MODEL",
+            "value": "deepseek-v4-flash"
         },
         {
             "name": "ANTHROPIC_DEFAULT_OPUS_MODEL",

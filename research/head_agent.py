@@ -5,7 +5,7 @@ from typing import Any
 from agent import run_agent
 from tools import TOOL_MAP
 
-DECOMPOSE_TOOLS = [
+DECOMPOSE_TOOLS_DEEPSEEK = [
     {
         "name": "run_command",
         "description": "Run a shell command. Useful for quick exploration or counting.",
@@ -23,13 +23,50 @@ DECOMPOSE_TOOLS = [
     },
 ]
 
+# For claude_cli backend: give Read only — the agent should reason directly without tools.
+# Having at least one tool ensures --allowedTools is passed, restricting the agent's tool set.
+DECOMPOSE_TOOLS_CLAUDE_CLI = [
+    {
+        "name": "read_file",
+        "description": "Read a file. Not needed for decomposition — use your own knowledge.",
+        "parameters": {"path": "str"},
+    },
+]
+
 
 def decompose_topic(topic: str, working_dir: str, backend: str = "deepseek") -> list[dict[str, Any]]:
     """Decompose a broad research topic into 5-7 specific sub-topics.
 
     Returns a list of dicts with keys: id, title, description.
     """
-    task = f"""You are a research coordinator. Decompose the following broad research topic into 5-7 specific, well-scoped sub-topics suitable for independent investigation.
+    if backend == "claude_cli":
+        tools = DECOMPOSE_TOOLS_CLAUDE_CLI
+        task = f"""You are a research coordinator. Decompose the following broad research topic into 5-7 specific, well-scoped sub-topics suitable for independent investigation.
+
+Research topic: {topic}
+
+Requirements for each sub-topic:
+- Be specific and self-contained
+- Include concrete research questions or areas to explore
+- Cover different angles of the main topic
+- Be suitable for a 15-minute focused research session
+
+Output format (MUST be valid JSON):
+```json
+[
+  {{
+    "id": 1,
+    "title": "Short descriptive title",
+    "description": "Detailed description of what to research, including specific questions to answer and angles to explore."
+  }},
+  ...
+]
+```
+
+Use your own knowledge to decompose the topic — do NOT search the web. Output ONLY the JSON array, nothing else before or after. Then write TASK_COMPLETE."""
+    else:
+        tools = DECOMPOSE_TOOLS_DEEPSEEK
+        task = f"""You are a research coordinator. Decompose the following broad research topic into 5-7 specific, well-scoped sub-topics suitable for independent investigation.
 
 Research topic: {topic}
 
@@ -56,10 +93,11 @@ Output ONLY the JSON array, nothing else before or after. Then write TASK_COMPLE
     result = run_agent(
         task=task,
         working_dir=working_dir,
-        tools=DECOMPOSE_TOOLS,
+        tools=tools,
         tool_map=TOOL_MAP,
         max_steps=8,
         backend=backend,
+        agent_name="head_decompose",
     )
 
     # Extract JSON from the last assistant message

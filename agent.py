@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import time
 from typing import Any, Callable, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -13,7 +15,7 @@ _CLAUDE_NATIVE_TOOL_SPECS: dict[str, tuple[str, str]] = {
     "write_file": ("Write", "Write content to a file. Parameters: file_path (str), content (str)"),
     "run_command": ("Bash", "Run a shell command. Parameters: command (str, required), description (str, optional)"),
     "web_search": ("WebSearch", "Search the web. Parameters: query (str, required)"),
-    "call_claude": ("Bash", "Use Bash with 'claude -p \"...\"' for deep reasoning on a specific question. Or just reason through the problem directly in your response."),
+    "call_claude": ("Bash", "Use Bash for running commands and scripts. For deep reasoning or analysis, think through the problem yourself — you ARE the reasoning engine. Do NOT spawn nested claude -p calls."),
 }
 
 # Python tool name → Claude CLI native tool name (for translating task text)
@@ -115,10 +117,8 @@ def _build_claude_cli_prompt(tools: list[dict[str, Any]]) -> str:
 - When the task is fully complete, include the exact text "TASK_COMPLETE" in your final response.
 
 ## Important Notes
-- If WebSearch or WebFetch is blocked for a domain (e.g. arxiv.org), use Bash with curl instead:
-  Example: Bash: curl -sL "https://arxiv.org/abs/..." | head -200
-- Use Bash for any command-line operation you need.
 - Write final outputs to the file path specified in the task.
+- If WebSearch is unavailable and you need to fetch a URL, use Bash with curl (only if Bash is listed above).
 
 DO NOT output JSON tool call blocks. Use your native tool calling instead.
 Use EXACTLY the parameter names listed for each tool.
@@ -169,6 +169,36 @@ def _is_persistent_error(result: str) -> bool:
     return any(e in result_lower for e in _PERSISTENT_ERRORS)
 
 
+def _save_agent_log(
+    agent_name: str,
+    working_dir: str,
+    prompt: str,
+    response_text: str,
+    success: bool,
+    elapsed: float,
+    extra: Optional[dict[str, Any]] = None,
+) -> str:
+    """Save agent conversation to a debug log file in the working directory."""
+    log_dir = os.path.join(working_dir, "agent_logs")
+    os.makedirs(log_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", agent_name)[:40]
+    log_file = os.path.join(log_dir, f"{safe_name}_{ts}.json")
+    log_entry = {
+        "agent": agent_name,
+        "timestamp": ts,
+        "elapsed_seconds": round(elapsed, 1),
+        "success": success,
+        "prompt": prompt,
+        "response": response_text[:5000],
+    }
+    if extra:
+        log_entry["extra"] = extra
+    with open(log_file, "w") as f:
+        json.dump(log_entry, f, indent=2, default=str)
+    return log_file
+
+
 def run_agent(
     task: str,
     working_dir: str,
@@ -176,10 +206,11 @@ def run_agent(
     tool_map: dict[str, Callable],
     max_steps: int = 10,
     backend: str = "deepseek",
+    agent_name: str = "agent",
 ) -> dict[str, Any]:
     if backend == "claude_cli":
-        return _run_with_claude_cli(task, working_dir, tools)
-    return _run_with_deepseek(task, working_dir, tools, tool_map, max_steps)
+        return _run_with_claude_cli(task, working_dir, tools, agent_name)
+    return _run_with_deepseek(task, working_dir, tools, tool_map, max_steps, agent_name)
 
 
 def _run_with_deepseek(
@@ -188,9 +219,11 @@ def _run_with_deepseek(
     tools: list[dict[str, Any]],
     tool_map: dict[str, Callable],
     max_steps: int,
+    agent_name: str = "agent",
 ) -> dict[str, Any]:
     llm = get_llm("deepseek")
     system_prompt = _build_system_prompt(tools, "deepseek")
+    t0 = time.time()
     messages: list = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=f"Working directory: {working_dir}\n\nTask: {task}"),
@@ -301,6 +334,17 @@ def _run_with_deepseek(
         except Exception:
             pass
 
+    # Save conversation log
+    elapsed = time.time() - t0
+    final_response = ""
+    for msg in reversed(messages):
+        content = msg.content if hasattr(msg, "content") else str(msg)
+        if len(content) > 50:
+            final_response = content
+            break
+    _save_agent_log(agent_name, working_dir, task, final_response, success, elapsed,
+                    extra={"iterations": iterations, "backend": "deepseek"})
+
     return {
         "messages": messages,
         "iterations": iterations,
@@ -312,9 +356,11 @@ def _run_with_claude_cli(
     task: str,
     working_dir: str,
     tools: list[dict[str, Any]],
+    agent_name: str = "agent",
 ) -> dict[str, Any]:
     llm = get_llm("claude_cli")
     system_prompt = _build_system_prompt(tools, "claude_cli")
+    t0 = time.time()
 
     # Translate Python tool names to Claude CLI native names in the task text
     translated_task = _translate_task_for_claude(task)
@@ -365,6 +411,10 @@ Working directory: {working_dir}
             success = "TASK_COMPLETE" in response_text
         except Exception:
             pass
+
+    elapsed = time.time() - t0
+    _save_agent_log(agent_name, working_dir, prompt, response_text, success, elapsed,
+                    extra={"backend": "claude_cli", "retried": not success and is_framework_error})
 
     return {
         "messages": [HumanMessage(content=prompt), response],

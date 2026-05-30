@@ -41,7 +41,7 @@ class ClaudeCLILLM:
                        (e.g. ["Bash", "Read", "Write", "WebSearch", "WebFetch"]).
     """
 
-    def __init__(self, timeout: int = 120):
+    def __init__(self, timeout: int = 300):
         self.timeout = timeout
 
     def invoke(self, messages: list[BaseMessage], **kwargs: Any) -> AIMessage:

@@ -6,13 +6,18 @@ from typing import Optional
 # Look for claude_env_sample.json in project root, fall back to
 # CLAUDE_ENV_PATH env var or the default location
 _CONFIG_PATH = Path(__file__).parent / "claude_env_sample.json"
+_EXAMPLE_PATH = Path(__file__).parent / "claude_env_sample.example.json"
 
 
 def _load_config() -> dict[str, str]:
     """Load environment variables from the Claude Code config file."""
     path = os.getenv("CLAUDE_ENV_PATH", str(_CONFIG_PATH))
     if not Path(path).exists():
-        return {}
+        # Fall back to example template
+        if _EXAMPLE_PATH.exists():
+            path = str(_EXAMPLE_PATH)
+        else:
+            return {}
 
     with open(path) as f:
         config = json.load(f)

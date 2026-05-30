@@ -85,7 +85,7 @@ def _make_workers_node():
         succeeded = 0
         failed = 0
 
-        max_workers = min(len(sub_tasks), 4)
+        max_workers = min(len(sub_tasks), 2)  # limit concurrent claude -p subprocesses
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_sub = {}

@@ -119,6 +119,7 @@ IMPORTANT: Generate the COMPLETE LaTeX document with preamble and all sections. 
         tool_map=TOOL_MAP,
         max_steps=12,
         backend=backend,
+        agent_name="writer",
     )
 
     import os
