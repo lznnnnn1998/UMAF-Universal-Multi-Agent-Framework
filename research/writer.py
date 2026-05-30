@@ -132,17 +132,17 @@ IMPORTANT: Generate the COMPLETE LaTeX document with preamble and all sections. 
     return _fallback_latex(top_3, topic, working_dir)
 
 
+_LATEX_ESCAPE_MAP = {
+    "\\": r"\textbackslash ",
+    "~": r"\textasciitilde ",
+    "^": r"\textasciicircum ",
+}
+
+
 def _latex_escape(text: str) -> str:
     """Escape LaTeX special characters in user-provided text."""
     for char in ("\\", "{", "}", "$", "&", "#", "_", "%", "~", "^"):
-        if char == "\\":
-            text = text.replace("\\", "\\textbackslash ")
-        elif char == "~":
-            text = text.replace("~", "\\textasciitilde ")
-        elif char == "^":
-            text = text.replace("^", "\\textasciicircum ")
-        else:
-            text = text.replace(char, "\\" + char)
+        text = text.replace(char, _LATEX_ESCAPE_MAP.get(char, "\\" + char))
     return text
 
 

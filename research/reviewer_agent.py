@@ -21,6 +21,11 @@ REVIEWER_TOOLS = [
         "description": "Search the web to verify factual claims found in research outputs.",
         "parameters": {"query": "str", "max_results": "int (optional, default 10)"},
     },
+    {
+        "name": "web_fetch",
+        "description": "Fetch content from a URL as plain text. Use to verify claims by reading original sources from arxiv.org and other trusted sites.",
+        "parameters": {"url": "str", "max_chars": "int (optional, default 12000, max 20000)"},
+    },
 ]
 
 

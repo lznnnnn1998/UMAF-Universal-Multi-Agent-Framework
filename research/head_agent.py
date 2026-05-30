@@ -35,60 +35,45 @@ DECOMPOSE_TOOLS_CLAUDE_CLI = [
 
 
 def decompose_topic(topic: str, working_dir: str, backend: str = "deepseek") -> list[dict[str, Any]]:
-    """Decompose a broad research topic into 5-7 specific sub-topics.
+    """Decompose a research topic into 2-8 sub-topics, scaled to its complexity.
 
     Returns a list of dicts with keys: id, title, description.
     """
+    json_template = """[
+  {
+    "id": 1,
+    "title": "Short descriptive title",
+    "description": "Detailed description of what to research, including specific questions to answer and angles to explore."
+  },
+  ...
+]"""
+
+    common = f"""You are a research coordinator. Analyze the complexity of this research topic and decompose it into an appropriate number of sub-topics — at least 2 and at most 8.
+
+Research topic: {topic}
+
+## How to size the decomposition
+- **Narrow/specific topic** (e.g. a single method or technique): 2-3 sub-topics
+- **Moderate topic** (e.g. a family of techniques or one research area): 4-5 sub-topics
+- **Broad/complex topic** (e.g. a whole field or comparing multiple paradigms): 6-8 sub-topics
+
+## Requirements for each sub-topic
+- Be specific and self-contained
+- Include concrete research questions or areas to explore
+- Cover different angles of the main topic
+- Be suitable for a 15-minute focused research session
+
+Output format (MUST be valid JSON):
+```json
+{json_template}
+```"""
+
     if backend == "claude_cli":
         tools = DECOMPOSE_TOOLS_CLAUDE_CLI
-        task = f"""You are a research coordinator. Decompose the following broad research topic into 5-7 specific, well-scoped sub-topics suitable for independent investigation.
-
-Research topic: {topic}
-
-Requirements for each sub-topic:
-- Be specific and self-contained
-- Include concrete research questions or areas to explore
-- Cover different angles of the main topic
-- Be suitable for a 15-minute focused research session
-
-Output format (MUST be valid JSON):
-```json
-[
-  {{
-    "id": 1,
-    "title": "Short descriptive title",
-    "description": "Detailed description of what to research, including specific questions to answer and angles to explore."
-  }},
-  ...
-]
-```
-
-Use your own knowledge to decompose the topic — do NOT search the web. Output ONLY the JSON array, nothing else before or after. Then write TASK_COMPLETE."""
+        task = f"{common}\n\nUse your own knowledge to decompose the topic — do NOT search the web. Output ONLY the JSON array, nothing else before or after. Then write TASK_COMPLETE."
     else:
         tools = DECOMPOSE_TOOLS_DEEPSEEK
-        task = f"""You are a research coordinator. Decompose the following broad research topic into 5-7 specific, well-scoped sub-topics suitable for independent investigation.
-
-Research topic: {topic}
-
-Requirements for each sub-topic:
-- Be specific and self-contained
-- Include concrete research questions or areas to explore
-- Cover different angles of the main topic
-- Be suitable for a 15-minute focused research session
-
-Output format (MUST be valid JSON):
-```json
-[
-  {{
-    "id": 1,
-    "title": "Short descriptive title",
-    "description": "Detailed description of what to research, including specific questions to answer and angles to explore."
-  }},
-  ...
-]
-```
-
-Output ONLY the JSON array, nothing else before or after. Then write TASK_COMPLETE."""
+        task = f"{common}\n\nOutput ONLY the JSON array, nothing else before or after. Then write TASK_COMPLETE."
 
     result = run_agent(
         task=task,
@@ -124,30 +109,31 @@ Output ONLY the JSON array, nothing else before or after. Then write TASK_COMPLE
 def _fallback_decompose(topic: str) -> list[dict[str, Any]]:
     """Generate a fallback decomposition if the LLM fails.
 
-    Extracts keywords from the topic string to make sub-topics more specific.
-    Splits on commas, 'and', and 'vs' to find candidate sub-topics.
+    Extracts keywords from the topic and scales sub-topic count from 2 to 8
+    based on the number of distinct keywords found (min 2, max 8).
     """
     import re
 
-    # Extract likely sub-topic names from the topic string
-    keywords = [s.strip() for s in re.split(r',| and | vs |;', topic) if len(s.strip()) >= 3]
+    keywords = [s.strip() for s in re.split(r',| and | vs |;', topic) if len(s.strip()) >= 2]
     if not keywords:
         keywords = [topic]
 
     templates = []
-    for i, kw in enumerate(keywords[:4]):
-        clean_kw = kw.strip().rstrip('.')
+    # One sub-topic per keyword (up to 6), plus comparative + future directions = up to 8
+    kw_limit = min(len(keywords), 6)
+    for i in range(kw_limit):
+        kw = keywords[i].strip().rstrip('.')
         templates.append({
             "id": i + 1,
-            "title": f"{clean_kw}: Mechanisms, Methods, and Key Results",
+            "title": f"{kw}: Mechanisms, Methods, and Key Results",
             "description": (
-                f"Deep-dive into '{clean_kw}' within the context of {topic}. "
+                f"Deep-dive into '{kw}' within the context of {topic}. "
                 f"Investigate the underlying mechanisms, established methods, representative results, "
                 f"and identify the most influential papers and benchmarks."
             ),
         })
 
-    # Always add a comparative analysis and future directions
+    # Always add comparative analysis and future directions
     base_id = len(templates)
     templates.append({
         "id": base_id + 1,
@@ -167,20 +153,16 @@ def _fallback_decompose(topic: str) -> list[dict[str, Any]]:
         ),
     })
 
-    # Pad to at least 5 sub-tasks
-    generic_fillers = [
-        ("Benchmarking and Evaluation Methodologies",
-         f"Survey standard benchmarks, evaluation protocols, and metrics used to assess approaches in {topic}. Compare reported results and analyze reproducibility."),
-        ("Practical Deployment and Systems Integration",
-         f"Investigate real-world deployment challenges for {topic}: hardware constraints, latency requirements, memory budgets, and integration with production systems."),
-    ]
-    while len(templates) < 5:
-        idx = len(templates) - base_id - 2
-        ftitle, fdesc = generic_fillers[idx]
+    # Ensure at least 2 sub-tasks (from single-keyword topics)
+    if len(templates) < 2:
         templates.append({
             "id": len(templates) + 1,
-            "title": f"{ftitle} for {topic}",
-            "description": fdesc,
+            "title": f"Overview and Key Techniques in {topic}",
+            "description": (
+                f"Provide a comprehensive overview of {topic}, covering the foundational concepts, "
+                f"key techniques, and major milestones in the field."
+            ),
         })
 
-    return templates
+    # Cap at 8
+    return templates[:8]

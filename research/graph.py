@@ -257,28 +257,20 @@ def _make_writer_node():
 def _router(state: ResearchState) -> Literal["workers", "reviewer", "writer", "__end__"]:
     status = state.get("status", "")
 
-    # Hard stops
-    if status.startswith("error"):
-        # Even on partial errors, try to continue forward if we have any outputs
-        if "no_subtasks" in status or "no_reviewable" in status or "no_top3" in status:
-            return END
-        # For decompose errors with fallback, proceed to workers
-        if "decompose" in status:
-            worker_outputs = state.get("worker_outputs", [])
-            if worker_outputs:
-                return "reviewer"
-            return END
+    # Terminal error states — no way forward
+    if status in ("error_no_subtasks", "error_no_reviewable", "error_no_top3"):
         return END
 
-    # Normal flow
-    if status == "decomposed":
-        return "workers"
-    if status in ("researched", "researched_partial"):
-        return "reviewer"
-    if status == "reviewed":
-        return "writer"
-    if status == "written":
-        return END
+    # Normal flow map
+    flow = {
+        "decomposed": "workers",
+        "researched": "reviewer",
+        "researched_partial": "reviewer",
+        "reviewed": "writer",
+        "written": END,
+    }
+    if status in flow:
+        return flow[status]
 
     return END
 

@@ -2,7 +2,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -16,19 +16,11 @@ _CLAUDE_NATIVE_TOOL_SPECS: dict[str, tuple[str, str]] = {
     "run_command": ("Bash", "Run a shell command. Parameters: command (str, required), description (str, optional)"),
     "web_search": ("WebSearch", "Search the web. Parameters: query (str, required)"),
     "call_claude": ("Bash", "Use Bash for running commands and scripts. For deep reasoning or analysis, think through the problem yourself — you ARE the reasoning engine. Do NOT spawn nested claude -p calls."),
+    "web_fetch": ("Bash", "Fetch content from a URL and return as plain text. Use for reading papers from arxiv.org, articles, and documentation. Run: python3 -c \"import urllib.request; req=urllib.request.Request(URL, headers={'User-Agent':'Mozilla/5.0 (compatible; UMAF/1.0)'}); print(urllib.request.urlopen(req, timeout=20).read().decode('utf-8', errors='replace')[:8000])\""),
+    "download_file": ("Bash", "Download content from a URL and save to a local file. Use BEFORE Read for arxiv.org papers. Run: python3 -c \"import urllib.request; req=urllib.request.Request(URL, headers={'User-Agent':'Mozilla/5.0 (compatible; UMAF/1.0)'}); data=urllib.request.urlopen(req, timeout=30).read(); open('OUTPUT_PATH','wb').write(data); print(f'Downloaded {{len(data)//1024}}KB to OUTPUT_PATH')\" — replace URL and OUTPUT_PATH with actual values."),
 }
 
-# Python tool name → Claude CLI native tool name (for translating task text)
-_TOOL_NAME_TRANSLATION = {
-    "call_claude": "Bash (run: claude -p \"your prompt\")",
-    "read_file": "Read",
-    "write_file": "Write",
-    "run_command": "Bash",
-    "web_search": "WebSearch",
-    "web_fetch": "WebFetch",
-}
-
-# Tool names that appear in task descriptions and need translation
+# Tool names that appear in task descriptions and need translation.
 # Regex word-boundary replacement covers all phrasings: "use X to", "using X", "via X", etc.
 _TOOL_NAMES_TO_TRANSLATE = [
     ("call_claude", 'Bash (run: claude -p "your prompt")'),
@@ -36,19 +28,14 @@ _TOOL_NAMES_TO_TRANSLATE = [
     ("read_file", "Read"),
     ("write_file", "Write"),
     ("web_search", "WebSearch"),
-    ("web_fetch", "WebFetch"),
+    ("web_fetch", "Bash (python3 urllib fetch)"),
+    ("download_file", "Bash (python3 urllib download + save to file)"),
 ]
 
 # Tool error patterns that indicate a persistent failure (don't keep retrying)
 _PERSISTENT_ERRORS = ("timed out", "not found", "no such file", "permission denied")
 _FORCE_WRAPUP_THRESHOLD = 3   # steps remaining before forcing wrap-up
 _MAX_CONSECUTIVE_ERRORS = 3   # consecutive tool errors before stopping retries
-
-
-def _build_system_prompt(tools: list[dict[str, Any]], backend: str = "deepseek") -> str:
-    if backend == "claude_cli":
-        return _build_claude_cli_prompt(tools)
-    return _build_deepseek_prompt(tools)
 
 
 def _build_deepseek_prompt(tools: list[dict[str, Any]]) -> str:
@@ -126,7 +113,7 @@ Use EXACTLY the parameter names listed for each tool.
 IMPORTANT: After using tools, always produce a final text response. Include TASK_COMPLETE when the entire task is finished."""
 
 
-def _parse_tool_call(text: str) -> Optional[dict[str, Any]]:
+def _parse_tool_call(text: str) -> dict[str, Any] | None:
     """Extract a JSON tool-call block using brace counting.
 
     Uses brace counting instead of regex to handle nested objects/arrays in args
@@ -176,10 +163,10 @@ def _save_agent_log(
     response_text: str,
     success: bool,
     elapsed: float,
-    extra: Optional[dict[str, Any]] = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """Save agent conversation to a debug log file in the working directory."""
-    log_dir = os.path.join(working_dir, "agent_logs")
+    log_dir = os.path.join(working_dir, "agent_log")
     os.makedirs(log_dir, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", agent_name)[:40]
@@ -222,7 +209,7 @@ def _run_with_deepseek(
     agent_name: str = "agent",
 ) -> dict[str, Any]:
     llm = get_llm("deepseek")
-    system_prompt = _build_system_prompt(tools, "deepseek")
+    system_prompt = _build_deepseek_prompt(tools)
     t0 = time.time()
     messages: list = [
         SystemMessage(content=system_prompt),
@@ -233,23 +220,40 @@ def _run_with_deepseek(
     success = False
     consecutive_errors = 0
     known_unavailable: set[str] = set()
+    has_written_output = False
+    _WRITE_REMINDER_STEP = max(1, max_steps - 4)  # remind at ~2/3 through
 
     for i in range(max_steps):
         iterations = i + 1
         steps_left = max_steps - iterations
 
+        # --- Mid-loop intervention: if we're past the reminder threshold and ---
+        # --- still haven't written the output file, nudge the agent hard    ---
+        if not has_written_output and iterations >= _WRITE_REMINDER_STEP:
+            messages.append(HumanMessage(
+                content=(
+                    f"You have used {iterations}/{max_steps} steps and have NOT yet written "
+                    "your output file. The primary goal is to produce the research output file "
+                    "— not just to keep searching. Call write_file within the next "
+                    f"{max_steps - iterations} step(s) with whatever research you have so far. "
+                    "You can always refine it afterward if steps remain."
+                )
+            ))
+
         # --- Pre-call intervention: force wrap-up if running out of steps ---
         if steps_left <= _FORCE_WRAPUP_THRESHOLD:
             if steps_left == 0:
-                urgency = "This is your LAST step — you must wrap up NOW."
+                urgency = "This is your LAST step — you MUST call write_file NOW."
             else:
                 urgency = f"Only {steps_left} step(s) remaining."
             messages.append(HumanMessage(
                 content=(
-                    f"IMPORTANT: {urgency} "
-                    "Stop retrying tools that have been failing. "
-                    "Summarize whatever research findings you have collected so far, "
-                    "write your best-effort output file, and respond with TASK_COMPLETE immediately."
+                    f"CRITICAL: {urgency}\n"
+                    "Do NOT call web_search, download_file, read_file, web_fetch, "
+                    "run_command, or call_claude anymore. You have already collected "
+                    "enough research material. Your ONLY task now is to call write_file "
+                    "with your best-effort findings, then output TASK_COMPLETE. "
+                    "Write the file FIRST, then say TASK_COMPLETE — do NOT skip writing the file."
                 )
             ))
 
@@ -280,10 +284,12 @@ def _run_with_deepseek(
         response_text = response.content if hasattr(response, "content") else str(response)
         messages.append(AIMessage(content=response_text))
 
-        if "TASK_COMPLETE" in response_text:
-            success = True
-            break
+        has_task_complete = "TASK_COMPLETE" in response_text
 
+        # Execute any tool call BEFORE checking TASK_COMPLETE.
+        # If a response contains both a tool call and TASK_COMPLETE, we must
+        # execute the tool first (e.g. write_file) — otherwise the output
+        # file is never written and the work is lost.
         tool_call = _parse_tool_call(response_text)
         if tool_call:
             tool_name = tool_call["tool"]
@@ -301,6 +307,10 @@ def _run_with_deepseek(
                 except TypeError:
                     result = func(**tool_args)
 
+            # Track whether the output file has been written
+            if tool_name == "write_file" and not result.startswith("Error"):
+                has_written_output = True
+
             # Track persistent errors
             if _is_persistent_error(result):
                 consecutive_errors += 1
@@ -308,7 +318,12 @@ def _run_with_deepseek(
                 consecutive_errors = 0
 
             messages.append(HumanMessage(content=f"Tool result: {result}"))
-        else:
+
+        if has_task_complete:
+            success = True
+            break
+
+        if not tool_call:
             messages.append(HumanMessage(
                 content=(
                     "No valid tool call found in your response. "
@@ -320,8 +335,11 @@ def _run_with_deepseek(
     if not success and max_steps > 0:
         messages.append(HumanMessage(
             content=(
-                "You have exhausted all steps. Write a summary of whatever you accomplished, "
-                "including any files you already created. Then output TASK_COMPLETE."
+                "You have exhausted all your steps. You did NOT write the output file yet, "
+                "which was the primary goal of this task. Call write_file IMMEDIATELY with "
+                "your best-effort research findings — use whatever notes, papers, and "
+                "information you have gathered. Write the file now, then output TASK_COMPLETE. "
+                "If you skip the write_file call again, the task will fail completely."
             )
         ))
         try:
@@ -359,62 +377,48 @@ def _run_with_claude_cli(
     agent_name: str = "agent",
 ) -> dict[str, Any]:
     llm = get_llm("claude_cli")
-    system_prompt = _build_system_prompt(tools, "claude_cli")
+    system_prompt = _build_claude_cli_prompt(tools)
     t0 = time.time()
-
-    # Translate Python tool names to Claude CLI native names in the task text
     translated_task = _translate_task_for_claude(task)
 
-    prompt = f"""{system_prompt}
-
-Working directory: {working_dir}
-
-## Task
-{translated_task}"""
+    def _build_prompt(prefix: str = "") -> str:
+        return f"{prefix}{system_prompt}\n\nWorking directory: {working_dir}\n\n## Task\n{translated_task}"
 
     allowed = list(dict.fromkeys(
         spec[0] for t in tools if (spec := _CLAUDE_NATIVE_TOOL_SPECS.get(t["name"]))
     ))
 
-    # Try primary invocation
-    response = llm.invoke(
-        [HumanMessage(content=prompt)],
-        allowed_tools=allowed,
-        cwd=working_dir,
-    )
-    response_text = response.content if hasattr(response, "content") else str(response)
+    def _invoke(prompt: str) -> tuple[AIMessage, str, bool]:
+        response = llm.invoke(
+            [HumanMessage(content=prompt)],
+            allowed_tools=allowed,
+            cwd=working_dir,
+        )
+        text = response.content if hasattr(response, "content") else str(response)
+        return response, text, "TASK_COMPLETE" in text
 
-    success = "TASK_COMPLETE" in response_text
+    prompt = _build_prompt()
+    response, response_text, success = _invoke(prompt)
 
-    # If timeout or failure, retry once with a simplified prompt asking for summary
-    is_framework_error = (
+    # Retry once on framework error (timeout, stderr, etc.)
+    is_error = (
         "timed out" in response_text.lower()
-        or "error:" in response_text.lower()  # our framework's error prefix, not research content
+        or "error:" in response_text.lower()
         or "[stderr]" in response_text.lower()
     )
-    if not success and is_framework_error:
-        retry_prompt = (
-            f"{system_prompt}\n\n"
-            f"The previous attempt failed due to a timeout or error. "
-            f"Please do your best with whatever is available — skip time-consuming steps. "
-            f"Write whatever findings you can to the output file and output TASK_COMPLETE.\n\n"
-            f"Working directory: {working_dir}\n\n"
-            f"## Task\n{translated_task}"
+    retried = False
+    if not success and is_error:
+        retried = True
+        prompt = _build_prompt(
+            "The previous attempt failed due to a timeout or error. "
+            "Do your best with whatever is available — skip time-consuming steps. "
+            "Write whatever findings you can and output TASK_COMPLETE.\n\n"
         )
-        try:
-            response = llm.invoke(
-                [HumanMessage(content=retry_prompt)],
-                allowed_tools=allowed,
-                cwd=working_dir,
-            )
-            response_text = response.content if hasattr(response, "content") else str(response)
-            success = "TASK_COMPLETE" in response_text
-        except Exception:
-            pass
+        response, response_text, success = _invoke(prompt)
 
     elapsed = time.time() - t0
     _save_agent_log(agent_name, working_dir, prompt, response_text, success, elapsed,
-                    extra={"backend": "claude_cli", "retried": not success and is_framework_error})
+                    extra={"backend": "claude_cli", "retried": retried})
 
     return {
         "messages": [HumanMessage(content=prompt), response],

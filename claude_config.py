@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 # Look for claude_env_sample.json in project root, fall back to
 # CLAUDE_ENV_PATH env var or the default location
@@ -38,7 +37,7 @@ def get_claude_env() -> dict[str, str]:
     return dict(_claude_env)
 
 
-def merge_claude_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
+def merge_claude_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Return a full env dict: current process env + claude overrides."""
     merged = dict(os.environ)
     if base_env:

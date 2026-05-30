@@ -1,7 +1,6 @@
 import argparse
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 from graph import MultiAgentState, build_graph
@@ -92,7 +91,7 @@ def main():
         "--working-dir",
         "-d",
         default=None,
-        help="Working directory for file operations (default: a temp directory)",
+        help="Working directory for file operations (default: research_output/ inside the repo)",
     )
     parser.add_argument(
         "--backend",
@@ -115,7 +114,7 @@ def main():
         print("Error: no requirement/topic provided.")
         sys.exit(1)
 
-    working_dir = args.working_dir or tempfile.mkdtemp(prefix="agent_work_")
+    working_dir = args.working_dir or str(Path(__file__).resolve().parent / "research_output")
     Path(working_dir).mkdir(parents=True, exist_ok=True)
 
     print(f"Mode: {args.mode}")

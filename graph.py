@@ -31,6 +31,11 @@ CODER_TOOLS = [
         "description": "Search the web for information. Returns titles, URLs, and snippets.",
         "parameters": {"query": "str", "max_results": "int (optional, default 10)"},
     },
+    {
+        "name": "web_fetch",
+        "description": "Fetch content from a URL as plain text. Use for reading papers, articles, and documentation from trusted sources like arxiv.org.",
+        "parameters": {"url": "str", "max_chars": "int (optional, default 12000, max 20000)"},
+    },
 ]
 
 REVIEWER_TOOLS = [
@@ -53,6 +58,11 @@ REVIEWER_TOOLS = [
         "name": "web_search",
         "description": "Search the web for information. Returns titles, URLs, and snippets.",
         "parameters": {"query": "str", "max_results": "int (optional, default 10)"},
+    },
+    {
+        "name": "web_fetch",
+        "description": "Fetch content from a URL as plain text. Use for reading papers and documentation from trusted sources like arxiv.org.",
+        "parameters": {"url": "str", "max_chars": "int (optional, default 12000, max 20000)"},
     },
 ]
 

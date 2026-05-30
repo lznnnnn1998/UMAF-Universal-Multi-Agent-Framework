@@ -1,6 +1,3 @@
-- [Project Overview](project_overview.md) — Full architecture: both backends, all tools, circuit breakers, both pipelines
-- [Research Pipeline](research_pipeline.md) — Phase 2: head/workers/reviewer/writer topology with verified results (43/50 scoring)
-- [Backend Architecture](backend_architecture.md) — DeepSeek vs Claude CLI: tool name translation, env injection, cwd sandboxing, permissions
-- [Circuit Breakers](circuit_breakers.md) — Resilience patterns: agent-level error spirals, graph-level thread timeouts, dedup, forced progress
-- [Fixes and Verified Results](fixes_and_verified_results.md) — The 12 bugs found/fixed, before/after metrics, root cause analysis
-- [v1.2 Changes](v1.2_changes.md) — Backend-aware agents, conversation logger, scoped permissions, security cleanup
+- [Version Diffs](version_diffs.md) — Complete changelog: v1.0→v1.1 (12 bug fixes), v1.2 (backend-aware agents), v1.3 (Python 3.11, code quality)
+- [Architecture Progress](architecture_progress.md) — Two pipelines, two backends, five tools, circuit breakers, design decisions, version evolution
+- [Key Updates](key_updates.md) — Verified metrics across versions, critical bug summaries, architecture decisions that matter most
