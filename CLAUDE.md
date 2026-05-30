@@ -1,6 +1,6 @@
-# Universal Multi-Agent Framework
+# Universal Multi-Agent Framework (UMAF) v1.2
 
-A LangChain + DeepSeek framework that mimics Claude Code's autonomous behavior with multi-agent collaboration. Supports two pipelines: **coder** (code generation with review loop) and **research** (head→workers→reviewer→writer for LaTeX research proposals).
+A LangChain + DeepSeek framework that mimics Claude Code's autonomous behavior with multi-agent collaboration. Supports two pipelines: **coder** (code generation with review loop) and **research** (head→workers→reviewer→writer for LaTeX research proposals). Both backends route through DeepSeek API — `claude_cli` uses the Anthropic-compatible proxy, `deepseek` uses the native API.
 
 ## Architecture
 
@@ -27,9 +27,9 @@ main.py ──▶ research/graph.py ──▶ research/head_agent.py    (Phase 2
 
 **Claude CLI backend** (`--backend claude_cli`):
 - `ClaudeCLILLM` class shells out to `claude -p` subprocess
-- Reads env vars from `claude_env_sample.json` via `claude_config.py`
+- Reads env vars from `claude_env_sample.json` via `claude_config.py` (falls back to `claude_env_sample.example.json`)
 - Routes through DeepSeek's Anthropic-compatible API proxy
-- 120s subprocess timeout, `--output-format text`, `--allowedTools` support
+- 300s subprocess timeout, `--output-format text`, `--allowedTools` support
 - Accepts `cwd` kwarg for working directory sandboxing
 
 Exports `get_llm(backend)` factory — returns the appropriate LLM instance.
@@ -47,7 +47,7 @@ Exported as `TOOL_MAP: dict[str, Callable]`.
 
 ### `agent.py` — Single Agent Loop
 
-`run_agent(task, working_dir, tools, tool_map, max_steps, backend)` runs an autonomous agent. Two code paths:
+`run_agent(task, working_dir, tools, tool_map, max_steps, backend, agent_name)` runs an autonomous agent. Two code paths:
 
 **DeepSeek path** (`_run_with_deepseek`):
 - JSON tool-call loop: LLM returns `{"tool": "...", "args": {...}}`
@@ -59,6 +59,12 @@ Exported as `TOOL_MAP: dict[str, Callable]`.
 - Tool name translation: Python names (`read_file`, `call_claude`, etc.) → Claude CLI native names (`Read`, `Bash`, etc.) via word-boundary regex
 - Retry on timeout/error with simplified prompt
 - Passes `cwd=working_dir` so files land in the correct directory
+- `call_claude` spec discourages nested `claude -p` calls (the agent IS already Claude Code)
+
+**Conversation Logger** (`_save_agent_log`):
+- All agents save prompts, responses, success status, and elapsed time to `agent_logs/` under the working directory
+- Log files named `<agent_name>_<timestamp>.json` for debugging
+- Controlled by the `agent_name` parameter on `run_agent()` — pass descriptive names like `"head_decompose"`, `"worker_01"`, `"reviewer"`, `"writer"`
 
 Returns `{"messages", "iterations", "success"}`.
 
@@ -79,13 +85,15 @@ python3 main.py -m coder "write a hello world script in Python"
 ### `research/` — Research Pipeline (Phase 2)
 
 **`research/head_agent.py`** — Task decomposition:
-- `decompose_topic()` calls `run_agent` with DECOMPOSE_TOOLS (run_command, call_claude, web_search)
+- Backend-aware: `claude_cli` uses Read-only tool set (pure reasoning, no web search needed — the model already knows the topics)
+- `deepseek` backend uses DECOMPOSE_TOOLS_DEEPSEEK (run_command, call_claude, web_search)
 - Extracts JSON array from LLM output; falls back to `_fallback_decompose()` on failure
 - Fallback splits topic on commas/`and`/`vs` to extract keywords, generates 5+ specific sub-tasks
 
 **`research/worker_agent.py`** — Research execution:
-- `research_subtask()` calls `run_agent` with WORKER_TOOLS (all 5 tools)
-- Task instructs agent to research, write `research_NN_Title.md`, verify, and signal TASK_COMPLETE
+- **Backend-aware tasks** (v1.2): `claude_cli` workers use WebSearch + Write + Read directly — no nested `claude -p` calls. The agent IS already Claude Code.
+- `deepseek` workers use `call_claude` for deep reasoning (the Python function shells out to `claude -p`)
+- Task instructs agent to research, write `research_NN_Title.md`, verify with Read, and signal TASK_COMPLETE
 - Returns `{sub_task_id, title, output_file, summary}`
 
 **`research/reviewer_agent.py`** — Scoring and ranking:
@@ -105,13 +113,14 @@ python3 main.py -m coder "write a hello world script in Python"
 head (decompose) → workers (parallel research) → reviewer (score) → writer (LaTeX) → END
 ```
 - Head agent: 120s timeout via ThreadPoolExecutor, fallback on timeout
-- Workers: parallel execution via ThreadPoolExecutor (max 4 concurrent), 300s timeout each
+- Workers: parallel execution via ThreadPoolExecutor (max 2 concurrent, v1.2), 300s timeout each
 - Deduplication: MD5 fingerprint of summaries, marks duplicates post-hoc
+- File verification: checks `os.path.exists()` and `os.path.getsize() > 0` after each worker
 - Status flow: `decomposed → researched/researched_partial → reviewed → written → END`
 - Router always moves forward; partial results accepted at every stage
 
 ```bash
-python3 main.py -m research -b claude_cli "model quantization: QAT, PTQ, stochastic rounding"
+python3 main.py -m research -b claude_cli --working-dir research_output "Flash Attention, Multi-Query Attention, Grouped Query Attention"
 ```
 
 ### `main.py` — Entry Point
@@ -124,9 +133,7 @@ Reads requirement from argument, stdin, or interactive prompt. Creates temp work
 
 ### `claude_config.py` — Environment Setup
 
-Loads `claude_env_sample.json` which defines 12 env vars for Claude CLI subprocess routing:
-- `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`
-- `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, etc.
+Loads `claude_env_sample.json` (12 env vars for Claude CLI subprocess routing). Falls back to `claude_env_sample.example.json` if the main config doesn't exist.
 
 `merge_claude_env()` merges these with `os.environ` for subprocess calls.
 
@@ -134,13 +141,35 @@ Loads `claude_env_sample.json` which defines 12 env vars for Claude CLI subproce
 
 ```bash
 pip install -r requirements.txt
+
 # Set DEEPSEEK_API_KEY in .env (for deepseek backend)
 # Ensure claude CLI is installed: npm install -g @anthropic-ai/claude-code
-# Copy and configure claude_env_sample.json for the claude_cli backend
 
-# Grant subprocess permissions (required for claude_cli backend):
-# ~/.claude/settings.json must have:
-#   "permissions": { "WebSearch": "*", "Bash": "*", "Read": "*", "Write": "*", "Edit": "*" }
+# For claude_cli backend:
+# 1. Copy the example config and add your API key:
+cp claude_env_sample.example.json claude_env_sample.json
+# Edit claude_env_sample.json: replace YOUR_DEEPSEEK_API_KEY with your real key
+
+# 2. Configure .claude/settings.local.json with scoped permissions:
+#   "permissions": {
+#     "allow": [
+#       "Bash(python3 *)",
+#       "Bash(claude *)",
+#       "Bash(curl *)",
+#       "Bash(ls *)",
+#       "Bash(cat *)",
+#       "Bash(mkdir *)",
+#       "Bash(wc *)",
+#       "Read(/path/to/project/**)",
+#       "Write(/path/to/project/**)",
+#       "Edit(/path/to/project/**)",
+#       "WebSearch(*)",
+#       "WebFetch(*)"
+#     ]
+#   }
+#
+# Global ~/.claude/settings.json only needs:
+#   "permissions": { "allow": ["Read(*)", "WebSearch(*)", "WebFetch(*)"] }
 ```
 
 ## Key Design Decisions
@@ -148,17 +177,32 @@ pip install -r requirements.txt
 - **Tool definitions separate from implementations**: metadata list for prompts + TOOL_MAP for execution
 - **Explicit `working_dir` parameter**: no global state for path sandboxing
 - **Claude CLI tool name translation**: Python names (`call_claude`) → native names (`Bash`) via regex
+- **Backend-aware task generation** (v1.2): `claude_cli` workers get different tasks than `deepseek` workers — no nested `claude -p` calls
 - **Circuit breakers at two levels**: agent-level (error spirals, forced wrap-up) and graph-level (thread timeouts, dedup)
 - **Reviewer (coder mode) has no write_file**: read + shell only for safety
 - **Reviewer (research mode) has write_file**: needs to write `scoring_report.json`
+- **Head agent for claude_cli uses Read-only tools** (v1.2): pure reasoning decomposition, no web search needed
 - **Python 3.9 compatible**: uses `Optional[X]` not `X | None`, avoids walrus operator in hot paths
 - **DuckDuckGo Lite for web_search**: no API key required, HTML scraping via urllib
 - **Fallbacks at every stage**: decomposition, worker research, scoring, LaTeX generation all have Python fallbacks
+- **Conversation logging** (v1.2): every agent saves prompt/response to `agent_logs/` for debugging
 
 ## Known Limitations
 
-- Workers writing output files: `claude -p` may not always write to the exact filename requested; files may appear under different names
-- Nested `claude -p` calls: worker tasks instruct agents to use `Bash` for `claude -p`, causing nested invocations (2-3min each)
-- DuckDuckGo scraping: regex-based HTML parsing is fragile to layout changes
+- Workers writing output files: `claude -p` may write to a slightly different filename than requested (v1.2 improved this but it's still not 100% reliable — graph verifies file existence)
+- Worker timeouts: `claude -p` subprocess timeout is 300s; complex research tasks may need more time (use shorter topics or increase `ClaudeCLILLM.timeout`)
 - DeepSeek backend: `run_agent` uses JSON tool-call format which may not be as reliable as native tool calling
-- Worker parallelism: max 4 concurrent to avoid overwhelming the API; no cancellation of already-running workers
+- Worker parallelism: max 2 concurrent (v1.2 reduced from 4) to avoid overwhelming API and system resources
+- DuckDuckGo scraping: regex-based HTML parsing is fragile to layout changes
+- `claude -p` permissions: the subprocess needs matching permission patterns in `.claude/settings*` files scoped to its working directory; run `main.py` with `--working-dir` under the project root so the subprocess finds project `.claude/` settings
+
+## v1.2 Changes (May 2026)
+
+- **Backend-aware worker tasks**: `claude_cli` workers use WebSearch+Write+Read directly (no nested `claude -p`)
+- **Head agent**: Read-only tool set for `claude_cli` — pure reasoning, ~70s decomposition
+- **Conversation logger**: all agents save prompts/responses to `agent_logs/` (`agent_name` parameter on `run_agent`)
+- **Permissions scoped**: Bash/Write/Read scoped to working directory (removed blanket `Bash(*)`/`Write(*)`/`Edit(*)` from global)
+- **Timeout**: `ClaudeCLILLM` 120s→300s; worker parallelism 4→2; `--allowedTools` always passed (fixes empty-tools = all-tools bug)
+- **Security**: `claude_env_sample.json` removed from git tracking, replaced with `.example.json` template; `claude_config.py` auto-falls back to example
+- **System prompt**: removed "Use Bash for anything" encouragement; `call_claude` spec discourages nesting
+- **Verified**: pipeline produces 4/6 worker research files (21-26KB each), top score 43/50, 41KB LaTeX

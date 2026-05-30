@@ -16,5 +16,5 @@ research_output/
 scoring_report.json
 research_subtopics.json
 research_proposal.tex
-research_*.md
+research_[0-9]*.md
 QAT_*.md

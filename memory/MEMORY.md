@@ -1,0 +1,6 @@
+- [Project Overview](project_overview.md) — Full architecture: both backends, all tools, circuit breakers, both pipelines
+- [Research Pipeline](research_pipeline.md) — Phase 2: head/workers/reviewer/writer topology with verified results (43/50 scoring)
+- [Backend Architecture](backend_architecture.md) — DeepSeek vs Claude CLI: tool name translation, env injection, cwd sandboxing, permissions
+- [Circuit Breakers](circuit_breakers.md) — Resilience patterns: agent-level error spirals, graph-level thread timeouts, dedup, forced progress
+- [Fixes and Verified Results](fixes_and_verified_results.md) — The 12 bugs found/fixed, before/after metrics, root cause analysis
+- [v1.2 Changes](v1.2_changes.md) — Backend-aware agents, conversation logger, scoped permissions, security cleanup
