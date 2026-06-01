@@ -12,15 +12,16 @@ metadata:
 UMAF is a LangChain + LangGraph multi-agent framework with two LLM backends and two pipelines.
 
 ```
-main.py → graph.py → agent.py → llm.py              (coder/reviewer)
-              │          │            ├── ChatOpenAI (deepseek-chat)
-              ▼          ▼            └── ClaudeCLILLM (subprocess)
-        MultiAgentState tools.py
-
-main.py → research/graph.py → head_agent.py          (research pipeline)
-              │                 worker_agent.py
-              ▼                 reviewer_agent.py
-        ResearchState           writer.py
+main.py → pipeline.py → agent.py → llm.py              (all pipelines)
+              │               │            ├── ChatOpenAI (deepseek-chat)
+              ▼               ▼            └── ClaudeCLILLM (subprocess)
+        BasePipeline    AgentRole ABC
+        ├── CoderPipeline     ├── CoderRole
+        ├── ResearchPipeline  ├── ResearchWorkerRole
+        └── CoderPPPipeline   ├── ResearchDecomposerRole
+                              ├── ResearchReviewerRole
+                              ├── WriterRole
+                              └── ... (10 roles total)
 ```
 
 ## Two Backends
@@ -31,15 +32,15 @@ main.py → research/graph.py → head_agent.py          (research pipeline)
 
 ## Two Pipelines
 
-### Coder/Reviewer (`graph.py`)
-Coder (all 5 tools) ↔ Reviewer (read_file, run_command, call_claude, web_search — no write_file). Max 5 cycles. Coder resets `review_passed=False` each run.
+### Coder/Reviewer (`pipeline.py` — `CoderPipeline`)
+Coder (all 6 tools) ↔ Reviewer (no write_file). Max 5 cycles. Coder resets `review_passed=False` each run.
 
-### Research (`research/graph.py`)
+### Research (`pipeline.py` — `ResearchPipeline`)
 ```
-head (decompose) → workers (parallel, max 2) → reviewer (score) → writer (LaTeX) → END
+head (decompose) → workers (dependency-ordered) → reviewer (score) → writer (LaTeX) → END
 ```
 - **Head**: Backend-aware (v1.2). `claude_cli` = Read-only, pure reasoning. `deepseek` = search tools. Dynamically scales 2-8 sub-topics by complexity (v1.3). 120s timeout, fallback on failure.
-- **Workers**: Backend-aware (v1.2). `claude_cli` = WebSearch+Write+Read directly. `deepseek` = `call_claude` for reasoning. 300s timeout each. MD5 dedup.
+- **Workers**: Backend-aware (v1.2). Dependency-ordered via `_topological_levels()` (v1.4). `claude_cli` = WebSearch+Write+Read directly. `deepseek` = `call_claude` for reasoning. 600s timeout each (v1.4). MD5 dedup. Stop-on-failure blocks downstream dependents (v1.4). Version-bump retry with context reuse via `CheckpointManager.load_previous()` (v1.4).
 - **Reviewer**: 5-dimension scoring (depth, accuracy, relevance, clarity, originality, each 1-10). Writes `scoring_report.json`. Falls back to auto-rank (25/50).
 - **Writer**: LLM generates LaTeX. Falls back to Python template with `_latex_escape()` (10 special chars). Template-based with scoring table and bibliography.
 
@@ -61,17 +62,16 @@ Tool definitions (metadata for prompts) separated from implementations (`TOOL_MA
 - Unknown tool blocklist: warns, doesn't repeat unavailable tools
 - Post-loop forced summary if all steps exhausted
 - Claude CLI retry on timeout/error (translated prompt)
+- Version-bump retry: `load_previous()` restores messages, resets iterations, injects retry context (v1.4)
 
-**Graph-level** (`research/graph.py`):
+**Graph-level** (`pipeline.py`):
 - Head agent: 120s ThreadPoolExecutor timeout → fallback decomposition
-- Workers: 300s individual timeout, max 2 concurrent
+- Workers: 600s individual timeout (v1.4), max 2 concurrent
+- Stop-on-failure: dependency levels block downstream tasks on failure (v1.4)
 - MD5 fingerprint dedup (first 200 chars normalized)
 - Router always moves forward (`researched_partial` accepted)
+- Worker retry state machine: `worker_retry` → `workers` with version+1, max 3 retries (v1.4)
 - Reviewer auto-ranks (25/50) if LLM scoring fails; Writer falls back to template
-
-**Coder graph** (`graph.py`):
-- Max 5 coder↔reviewer cycles
-- Coder resets `review_passed=False` each run (prevents stale-pass)
 
 ## Key Design Decisions
 - Explicit `working_dir` parameter — no global state
@@ -91,6 +91,7 @@ Tool definitions (metadata for prompts) separated from implementations (`TOOL_MA
 | v1.2 | Backend-aware agents, scoped permissions, conversation logger, security |
 | v1.3 | Python 3.11, dead code removal, simplifications, _latex_escape fix, dynamic decomposition, web_fetch |
 | v1.3.1 | Tool-before-TASK_COMPLETE fix, download_file + pre-fetch for arxiv access, 4/4 workers produce files |
+| v1.4 | Dependency stop-on-failure, version-bump retry with context reuse, honest parse_result, worker retry state machine, OOP refactoring (5-layer class hierarchy), 7/7 workers |
 
 ### Related
 [[version_diffs]], [[key_updates]]

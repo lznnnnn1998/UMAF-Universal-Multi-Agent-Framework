@@ -2,53 +2,28 @@ import json
 import re
 from typing import Any
 
-from agent import run_agent
-from tools import TOOL_MAP
-
-REVIEWER_TOOLS = [
-    {
-        "name": "read_file",
-        "description": "Read a file. Use this to read each research output file.",
-        "parameters": {"path": "str"},
-    },
-    {
-        "name": "write_file",
-        "description": "Write content to a file. Use to save the scoring report.",
-        "parameters": {"path": "str", "content": "str"},
-    },
-    {
-        "name": "web_search",
-        "description": "Search the web to verify factual claims found in research outputs.",
-        "parameters": {"query": "str", "max_results": "int (optional, default 10)"},
-    },
-    {
-        "name": "web_fetch",
-        "description": "Fetch content from a URL as plain text. Use to verify claims by reading original sources from arxiv.org and other trusted sites.",
-        "parameters": {"url": "str", "max_chars": "int (optional, default 12000, max 20000)"},
-    },
-]
+from agent import AgentResult, AgentRole
+from tools import ToolRegistry
 
 
-def review_and_score(
-    worker_outputs: list[dict[str, Any]],
-    topic: str,
-    working_dir: str,
-    backend: str = "deepseek",
-) -> list[dict[str, Any]]:
-    """Review all worker outputs, score them, and return top 3 ranked.
+class ResearchReviewerRole(AgentRole):
+    """Review all worker outputs, score them, and return ranked results."""
 
-    Returns a list of dicts with keys: sub_task_id, title, output_file,
-    scores (dict of dimension->score), total_score, rank.
-    """
-    if not worker_outputs:
-        return []
+    agent_name = "reviewer"
+    max_steps = 15
 
-    file_list = "\n".join(
-        f"  - [{wo['sub_task_id']}] {wo['output_file']}: {wo['title']}"
-        for wo in worker_outputs
-    )
+    def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
+        return ToolRegistry.to_dicts(ToolRegistry.research_reviewer_tools())
 
-    task = f"""You are a rigorous research reviewer. Read each research output file and score it on five dimensions.
+    def build_task(self, backend: str, topic: str = "",
+                   worker_outputs: list[dict[str, Any]] | None = None, **context: Any) -> str:
+        assert worker_outputs is not None
+        file_list = "\n".join(
+            f"  - [{wo['sub_task_id']}] {wo['output_file']}: {wo['title']}"
+            for wo in worker_outputs
+        )
+
+        return f"""You are a rigorous research reviewer. Read each research output file and score it on five dimensions.
 
 ## Research Topic
 {topic}
@@ -92,22 +67,36 @@ def review_and_score(
 
 Be fair but rigorous. The scoring will determine which proposals go into the final document."""
 
-    result = run_agent(
-        task=task,
+    def parse_result(self, result: AgentResult, working_dir: str, **context: Any) -> list[dict[str, Any]]:
+        return _extract_scores_from_result(result, working_dir)
+
+
+def review_and_score(
+    worker_outputs: list[dict[str, Any]],
+    topic: str,
+    working_dir: str,
+    backend: str = "deepseek",
+    version: int = 1,
+) -> list[dict[str, Any]]:
+    """Review all worker outputs, score them, and return top 3 ranked.
+
+    Returns a list of dicts with keys: sub_task_id, title, output_file,
+    scores (dict of dimension->score), total_score, rank.
+    """
+    if not worker_outputs:
+        return []
+
+    role = ResearchReviewerRole()
+    return role.execute(
         working_dir=working_dir,
-        tools=REVIEWER_TOOLS,
-        tool_map=TOOL_MAP,
-        max_steps=15,
         backend=backend,
-        agent_name="reviewer",
+        version=version,
+        topic=topic,
+        worker_outputs=worker_outputs,
     )
 
-    # Parse scores from the scoring report file or from agent output
-    scores = _extract_scores(result, working_dir)
-    return scores
 
-
-def _extract_scores(result: dict, working_dir: str) -> list[dict[str, Any]]:
+def _extract_scores_from_result(result: AgentResult, working_dir: str) -> list[dict[str, Any]]:
     """Extract scoring data from agent output or the scoring report file."""
     import os
 
@@ -122,7 +111,7 @@ def _extract_scores(result: dict, working_dir: str) -> list[dict[str, Any]]:
         pass
 
     # Fallback: try to extract JSON from agent messages
-    for msg in reversed(result["messages"]):
+    for msg in reversed(result.messages):
         content = msg.content if hasattr(msg, "content") else str(msg)
         match = re.search(r"\[[\s\S]*?\{[\s\S]*?\"sub_task_id\"[\s\S]*?\]", content)
         if match:

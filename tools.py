@@ -4,14 +4,138 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable
 
 from claude_config import merge_claude_env
 
 
+@dataclass
+class ToolSpec:
+    """Structured metadata for a tool available to agents."""
+    name: str
+    description: str
+    parameters: dict[str, str] = field(default_factory=dict)
+
+
+class ToolRegistry:
+    """Centralized registry of all tool specifications and implementations.
+
+    Provides role-specific tool sets and the TOOL_MAP for execution.
+    """
+
+    # --- Tool implementations (same functions, accessible as class attribute) ---
+    TOOL_MAP: dict[str, Callable] = {}  # populated after function definitions
+
+    # --- Individual tool specs ---
+    READ_FILE = ToolSpec(
+        name="read_file",
+        description="Read contents of a file at the given path.",
+        parameters={"path": "str"},
+    )
+    WRITE_FILE = ToolSpec(
+        name="write_file",
+        description="Write content to a file at the given path. Creates parent directories as needed.",
+        parameters={"path": "str", "content": "str"},
+    )
+    WRITE_LINES = ToolSpec(
+        name="write_lines",
+        description="Write a list of lines to a file. Preferred over write_file for large code files — each line is a separate string in a JSON array, which avoids escaping issues with multi-line strings.",
+        parameters={"path": "str", "lines": "list[str]"},
+    )
+    RUN_COMMAND = ToolSpec(
+        name="run_command",
+        description="Run a shell command and return its output (stdout + stderr). Timeout: 30s.",
+        parameters={"command": "str"},
+    )
+    CALL_CLAUDE = ToolSpec(
+        name="call_claude",
+        description="Call the Claude Code CLI to perform a complex reasoning subtask.",
+        parameters={"prompt": "str"},
+    )
+    WEB_SEARCH = ToolSpec(
+        name="web_search",
+        description="Search the web using DuckDuckGo and return results with titles, URLs, and snippets.",
+        parameters={"query": "str", "max_results": "int (optional, default 10, max 20)"},
+    )
+    WEB_FETCH = ToolSpec(
+        name="web_fetch",
+        description="Fetch content from a URL and return as plain text. Use for arxiv.org, articles, documentation.",
+        parameters={"url": "str", "max_chars": "int (optional, default 12000, max 20000)"},
+    )
+    DOWNLOAD_FILE = ToolSpec(
+        name="download_file",
+        description="Download a URL to a local file via urllib. Bypasses Claude Code network sandbox.",
+        parameters={"url": "str", "output_path": "str"},
+    )
+
+    # --- Role-specific tool lists ---
+
+    @classmethod
+    def coder_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
+
+    @classmethod
+    def reviewer_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
+
+    @classmethod
+    def research_decomposer_tools(cls, backend: str = "deepseek") -> list[ToolSpec]:
+        if backend == "claude_cli":
+            return [cls.READ_FILE]
+        return [cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH]
+
+    @classmethod
+    def research_worker_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH, cls.DOWNLOAD_FILE]
+
+    @classmethod
+    def research_reviewer_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.WEB_SEARCH, cls.WEB_FETCH]
+
+    @classmethod
+    def writer_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE]
+
+    @classmethod
+    def coderpp_decomposer_tools(cls, backend: str = "deepseek") -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
+
+    @classmethod
+    def coderpp_worker_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+
+    @classmethod
+    def coderpp_reviewer_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+
+    @classmethod
+    def organizer_tools(cls) -> list[ToolSpec]:
+        return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+
+    @classmethod
+    def to_dicts(cls, specs: list[ToolSpec]) -> list[dict[str, Any]]:
+        """Convert ToolSpec list to the dict format expected by BaseAgent."""
+        return [{"name": s.name, "description": s.description, "parameters": dict(s.parameters)} for s in specs]
+
+    @classmethod
+    def get_map(cls) -> dict[str, Callable]:
+        return dict(cls.TOOL_MAP)
+
+
+def _resolve_path(path: str, working_dir: str) -> Path:
+    """Resolve path relative to working_dir, stripping accidental prepend."""
+    wd_name = Path(working_dir).name
+    parts = Path(path).parts
+    if parts and parts[0] == wd_name:
+        path = str(Path(*parts[1:]))
+    return Path(working_dir) / path
+
+
 def read_file(path: str, working_dir: str = ".") -> str:
     """Read contents of a file at path, resolved relative to working_dir."""
-    full_path = Path(working_dir) / path
+    full_path = _resolve_path(path, working_dir)
     try:
         return full_path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -22,11 +146,26 @@ def read_file(path: str, working_dir: str = ".") -> str:
 
 def write_file(path: str, content: str, working_dir: str = ".") -> str:
     """Write content to a file at path, resolved relative to working_dir."""
-    full_path = Path(working_dir) / path
+    full_path = _resolve_path(path, working_dir)
     try:
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(content, encoding="utf-8")
         return f"Successfully wrote to {full_path}"
+    except Exception as e:
+        return f"Error writing file: {e}"
+
+
+def write_lines(path: str, lines: list[str], working_dir: str = ".") -> str:
+    """Write a list of lines to a file, resolved relative to working_dir.
+
+    Preferred over write_file for large code — JSON arrays of strings are
+    easier for LLMs to emit correctly than multi-line strings with escaping.
+    """
+    full_path = _resolve_path(path, working_dir)
+    try:
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text("\n".join(lines), encoding="utf-8")
+        return f"Successfully wrote {len(lines)} lines to {full_path}"
     except Exception as e:
         return f"Error writing file: {e}"
 
@@ -60,7 +199,8 @@ def call_claude(prompt: str, working_dir: str = ".") -> str:
     """
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "text"],
+            ["claude", "-p", prompt, "--output-format", "text",
+             "--permission-mode", "bypassPermissions"],
             capture_output=True,
             text=True,
             timeout=120,
@@ -203,7 +343,7 @@ def download_file(url: str, output_path: str, working_dir: str = ".") -> str:
         url: Full URL to download.
         output_path: Path to save the downloaded content (relative to working_dir).
     """
-    full_path = Path(working_dir) / output_path
+    full_path = _resolve_path(output_path, working_dir)
     try:
         full_path.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(
@@ -229,9 +369,13 @@ def download_file(url: str, output_path: str, working_dir: str = ".") -> str:
 TOOL_MAP = {
     "read_file": read_file,
     "write_file": write_file,
+    "write_lines": write_lines,
     "run_command": run_command,
     "call_claude": call_claude,
     "web_search": web_search,
     "web_fetch": web_fetch,
     "download_file": download_file,
 }
+
+# Populate ToolRegistry's TOOL_MAP with the same functions
+ToolRegistry.TOOL_MAP = TOOL_MAP

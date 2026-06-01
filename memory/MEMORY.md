@@ -1,3 +1,5 @@
 - [Version Diffs](version_diffs.md) — Complete changelog: v1.0→v1.1 (12 bug fixes), v1.2 (backend-aware agents), v1.3 (Python 3.11, code quality)
 - [Architecture Progress](architecture_progress.md) — Two pipelines, two backends, five tools, circuit breakers, design decisions, version evolution
 - [Key Updates](key_updates.md) — Verified metrics across versions, critical bug summaries, architecture decisions that matter most
+- [OOP Refactoring](oop_refactoring.md) — 5-layer class hierarchy, AgentRole ABC, ToolRegistry, 10 concrete roles, 3 dead graph.py files removed
+- [Pipeline Robustness](pipeline_robustness.md) — Dependency stop-on-failure, version-bump retry with context reuse, honest parse_result, worker retry state machine (v1.4)

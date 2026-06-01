@@ -1,20 +1,8 @@
+import os
 from typing import Any
 
-from agent import run_agent
-from tools import TOOL_MAP
-
-WRITER_TOOLS = [
-    {
-        "name": "read_file",
-        "description": "Read a file. Use to read each top-ranked research output.",
-        "parameters": {"path": "str"},
-    },
-    {
-        "name": "write_file",
-        "description": "Write content to a file. Use to save the LaTeX document.",
-        "parameters": {"path": "str", "content": "str"},
-    },
-]
+from agent import AgentRole
+from tools import ToolRegistry
 
 _LATEX_TEMPLATE = r"""\documentclass[11pt,a4paper]{article}
 
@@ -62,74 +50,89 @@ __BIB_PLACEHOLDER__
 """
 
 
-def write_proposal(
-    top_3: list[dict[str, Any]],
-    topic: str,
-    working_dir: str,
-    backend: str = "deepseek",
-) -> str:
-    """Generate a LaTeX research proposal from the top 3 scored submissions.
+class WriterRole(AgentRole):
+    """Generate a LaTeX research proposal from the top-scored submissions."""
 
-    Args:
-        top_3: Top 3 scored items (from reviewer), each with sub_task_id, title,
-               output_file, scores, total_score, rank.
-        topic: Original research topic for the document title.
-        working_dir: Working directory for file operations.
-        backend: LLM backend.
+    agent_name = "writer"
+    max_steps = 12
 
-    Returns:
-        Path to the generated LaTeX file.
-    """
-    if not top_3:
-        return ""
+    def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
+        return ToolRegistry.to_dicts(ToolRegistry.writer_tools())
 
-    file_list = "\n".join(
-        f"  - Rank {i+1} (score {s['total_score']}/50): {s['output_file']} — {s['title']}"
-        for i, s in enumerate(top_3)
-    )
+    def build_task(self, backend: str, topic: str = "",
+                   scored_works: list[dict[str, Any]] | None = None, **context: Any) -> str:
+        assert scored_works is not None
+        # Show all works with their scores so the writer can decide what to include
+        file_list = "\n".join(
+            f"  - Rank {i+1} (score {s.get('total_score', '?')}/50): {s['output_file']} — {s['title']}"
+            for i, s in enumerate(scored_works)
+        )
 
-    task = f"""You are a LaTeX document generator for a research proposal. Generate a complete, publication-quality LaTeX document.
+        return f"""You are a LaTeX document generator for a research proposal. Generate a complete, publication-quality LaTeX document.
 
 ## Research Topic
 {topic}
 
-## Top 3 Ranked Research Proposals
+## Scored Research Works (all available)
 {file_list}
 
 ## Instructions
-1. Read each of the top 3 research output files using `read_file`.
-2. For each proposal, write a well-structured LaTeX section (`\\section{{...}}`) synthesizing the research findings. Use proper LaTeX formatting:
+1. Read ALL of the research output files listed above using `read_file`. You have access to every scored work — not just the top few.
+2. Synthesize the findings into well-structured LaTeX sections (`\\section{{...}}`) that together form a coherent proposal. Use proper LaTeX formatting:
    - `\\subsection{{...}}` for sub-topics
    - `\\textbf{{...}}` and `\\textit{{...}}` for emphasis
    - `itemize` or `enumerate` for lists
    - `\\begin{{quote}}...\\end{{quote}}` for key insights
    - Math mode `$...$` or `$$...$$` where appropriate
-3. Write an abstract (150-250 words) summarizing all three proposals and their contribution to the main topic.
-4. Write a scoring summary section with a table showing scores for each dimension.
-5. Include a bibliography section with placeholder references from the research.
-6. Use `write_file` to save the FULL LaTeX document to `research_proposal.tex`.
-7. Output TASK_COMPLETE when done.
+3. You decide which works to emphasize and how to organize the proposal — include the most relevant findings from each work. Works with higher scores are generally more reliable, but lower-scored works may contain essential material (e.g., error bounds, position encoding) that the proposal needs.
+4. Write an abstract (150-250 words) summarizing the proposal and its contribution to the main topic.
+5. Write a scoring summary section with a table showing scores for each dimension across all works.
+6. Include a bibliography section with references from the research.
+7. Use `write_file` to save the FULL LaTeX document to `research_proposal.tex`.
+8. Output TASK_COMPLETE when done.
 
 IMPORTANT: Generate the COMPLETE LaTeX document with preamble and all sections. The document MUST compile with pdflatex. Use proper LaTeX escaping for special characters (&, %, $, #, _, {{, }}, ~, ^, \\)."""
 
-    run_agent(
-        task=task,
+    def parse_result(self, result, working_dir: str, topic: str = "",
+                     scored_works: list[dict[str, Any]] | None = None, **context: Any) -> str:
+        assert scored_works is not None
+        tex_path = os.path.join(working_dir, "research_proposal.tex")
+        if os.path.exists(tex_path):
+            return tex_path
+        return _fallback_latex(scored_works, topic, working_dir)
+
+
+def write_proposal(
+    scored_works: list[dict[str, Any]],
+    topic: str,
+    working_dir: str,
+    backend: str = "deepseek",
+    version: int = 1,
+) -> str:
+    """Generate a LaTeX research proposal from scored research submissions.
+
+    Args:
+        scored_works: All scored items from the reviewer (sorted by rank), each
+                      with sub_task_id, title, output_file, scores, total_score, rank.
+        topic: Original research topic for the document title.
+        working_dir: Working directory for file operations.
+        backend: LLM backend.
+        version: checkpoint version.
+
+    Returns:
+        Path to the generated LaTeX file.
+    """
+    if not scored_works:
+        return ""
+
+    role = WriterRole()
+    return role.execute(
         working_dir=working_dir,
-        tools=WRITER_TOOLS,
-        tool_map=TOOL_MAP,
-        max_steps=12,
         backend=backend,
-        agent_name="writer",
+        version=version,
+        topic=topic,
+        scored_works=scored_works,
     )
-
-    import os
-
-    tex_path = os.path.join(working_dir, "research_proposal.tex")
-    if os.path.exists(tex_path):
-        return tex_path
-
-    # Fallback: generate a basic LaTeX from template
-    return _fallback_latex(top_3, topic, working_dir)
 
 
 _LATEX_ESCAPE_MAP = {
@@ -147,24 +150,23 @@ def _latex_escape(text: str) -> str:
 
 
 def _fallback_latex(
-    top_3: list[dict[str, Any]],
+    scored_works: list[dict[str, Any]],
     topic: str,
     working_dir: str,
 ) -> str:
     """Generate a basic LaTeX file using the template."""
-    import os
-
+    n = len(scored_works)
     abstract = (
-        f"This document presents the top-ranked research proposals on {_latex_escape(topic)}, "
-        f"generated by a multi-agent research framework. Three independent research "
+        f"This document presents the research proposals on {_latex_escape(topic)}, "
+        f"generated by a multi-agent research framework. {n} research "
         f"agents investigated distinct sub-topics, which were then scored by a "
         f"reviewer agent on depth, accuracy, relevance, clarity, and originality. "
-        f"The highest-scored proposals are presented here."
+        f"The scored proposals are presented here."
     )
 
     # Build content sections
     sections = []
-    for item in top_3:
+    for item in scored_works:
         title = item.get("title", "Untitled")
         scores = item.get("scores", {})
         sections.append(r"\section{" + _latex_escape(title) + "}")
@@ -181,7 +183,7 @@ def _fallback_latex(
 
     # Build scores table
     score_rows = []
-    for item in top_3:
+    for item in scored_works:
         title = _latex_escape(item.get("title", "Untitled")[:40])
         s = item.get("scores", {})
         score_rows.append(
@@ -202,12 +204,12 @@ def _fallback_latex(
         + "\n".join(score_rows) + "\n"
         r"\hline" + "\n"
         r"\end{tabular}" + "\n"
-        r"\caption{Scoring breakdown for top-ranked research proposals (each dimension scored 1--10)}" + "\n"
+        r"\caption{Scoring breakdown for research proposals (each dimension scored 1--10)}" + "\n"
         r"\end{table}"
     )
 
     bib_entries = []
-    for i, item in enumerate(top_3):
+    for i, item in enumerate(scored_works):
         bib_entries.append(
             r"\bibitem{research" + str(i+1) + "} "
             + f"Research Agent {i+1}, ``{_latex_escape(item.get('title', 'Untitled'))},'' "

@@ -7,6 +7,33 @@ metadata:
   originSessionId: db564f0a-1b8e-4bed-8a26-28d0132d0605
 ---
 
+## v1.4 (June 2026) — Pipeline Robustness & Dependency Management
+
+**Why:** The research pipeline's dependency graph was decorative — workers ran in dependency order but failures didn't propagate to downstream tasks, and retries started from scratch with no memory of prior attempts. A three-layer bug masked this: (1) same-version retry had no checkpoint to load, (2) topological levels didn't stop on failure, (3) `parse_result` always reported success.
+
+### Dependency management
+- **Stop-on-failure in `_run_workers_with_deps`**: After each topological level, if any task failed and more levels remain, break out of the loop. Downstream tasks that depend on failed outputs are deferred for retry.
+- **Honest `parse_result`**: `ResearchWorkerRole.parse_result()` now checks `os.path.isfile()` before reporting `output_file` — empty/missing files correctly count as failure, triggering stop-on-failure.
+- **Worker retry state machine**: New `worker_retry` status in research flow dict creates a dedicated retry loop: failed workers only, version-bumped, with max retry limits.
+
+### Context-reusing retries
+- **Version-bump retry**: Removed `retry_failures=True` from `_run_workers_with_deps`; retries now go through the version-bump path (`worker_retry` → `workers` with `version+1`), which triggers `BaseAgent(version=N)` → `CheckpointManager.load_previous(N)` → restore messages + reset iterations + inject retry context.
+- **Agent checkpoint injection** (`agent.py:489`): When `version > 1`, loads previous checkpoint, restores full message history, resets `iterations=0`, and appends a `[System: This is version N retry...]` message so the agent knows what failed and why.
+
+### Constants
+- `WORKER_TIMEOUT`: 300 → 600s (complex attention mechanism derivations need more time)
+- `RESEARCH_MAX_VERSIONS`: 4 (allows up to 3 retries)
+- `RESEARCH_MAX_WORKER_RETRIES`: 3
+
+### Cleanup
+- **`graph.py` removed**: Dead code, replaced by `pipeline.py` (BasePipeline + CoderPipeline + ResearchPipeline + CoderPPPipeline)
+- **`.gitignore` updated**: Added `**/agent_log/`, `*output*/*.json`, `*output*/**/*.json`, coderpp pipeline output directories
+
+### Verified
+7/7 workers produce output; scores 48, 47, 45, 44, 43, 39, 38 out of 50; 60KB LaTeX (11 sections, 17 equations, 13 tables, 47 refs); 443s pipeline time.
+
+---
+
 ## v1.3.1 (May 2026) — Worker Output Fix & arxiv.org Access
 
 **Why:** 2/4 workers produced no output files because the agent loop checked TASK_COMPLETE before executing tool calls. `claude -p` subprocesses couldn't access arxiv.org due to cc-switch domain verification.

@@ -1,46 +1,55 @@
 import os
 from typing import Any
 
-from agent import run_agent
-from tools import TOOL_MAP, download_file, web_search
+from agent import AgentResult, AgentRole
+from tools import ToolRegistry, download_file, web_search
 
-WORKER_TOOLS = [
-    {
-        "name": "read_file",
-        "description": "Read the contents of a file.",
-        "parameters": {"path": "str"},
-    },
-    {
-        "name": "write_file",
-        "description": "Write content to a file. Use this to save research findings.",
-        "parameters": {"path": "str", "content": "str"},
-    },
-    {
-        "name": "run_command",
-        "description": "Run a shell command. Use for quick checks.",
-        "parameters": {"command": "str"},
-    },
-    {
-        "name": "call_claude",
-        "description": "Call the Claude Code CLI for deep research, analysis, or synthesis on a specific question. Provide a detailed prompt with what you need investigated.",
-        "parameters": {"prompt": "str"},
-    },
-    {
-        "name": "web_search",
-        "description": "Search the web for research papers, articles, and information. Returns titles, URLs, and snippets. Essential for finding sources.",
-        "parameters": {"query": "str", "max_results": "int (optional, default 10)"},
-    },
-    {
-        "name": "web_fetch",
-        "description": "Fetch content from a URL as plain text. Use this to read papers from arxiv.org, articles, and documentation. Bypasses Claude Code permission system.",
-        "parameters": {"url": "str", "max_chars": "int (optional, default 12000, max 20000)"},
-    },
-    {
-        "name": "download_file",
-        "description": "Download content from a URL and save to a local file. Use this BEFORE read_file for arxiv.org and other academic sites — download first, then read the local file. Uses framework-level HTTP (bypasses Claude Code's domain verification).",
-        "parameters": {"url": "str", "output_path": "str"},
-    },
-]
+
+class ResearchWorkerRole(AgentRole):
+    """Research a single sub-topic and write findings to a markdown file."""
+
+    agent_name = "worker"
+    max_steps = 12
+
+    def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
+        return ToolRegistry.to_dicts(ToolRegistry.research_worker_tools())
+
+    def build_task(self, backend: str, sub_task: dict | None = None,
+                   output_file: str = "", **context: Any) -> str:
+        assert sub_task is not None
+        title = sub_task["title"]
+        description = sub_task["description"]
+
+        if backend == "claude_cli":
+            prefetch_files = _prefetch_arxiv_sources(sub_task, context.get("working_dir", "."))
+            return _build_worker_task_claude_cli(title, description, output_file, prefetch_files)
+        return _build_worker_task_deepseek(title, description, output_file)
+
+    def parse_result(self, result: AgentResult, working_dir: str,
+                     sub_task: dict | None = None, output_file: str = "", **context: Any) -> dict[str, Any]:
+        assert sub_task is not None
+        summary = ""
+        for msg in reversed(result.messages):
+            if type(msg).__name__ != "AIMessage":
+                continue
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            if len(content) > 100:
+                summary = content[:500] + "..." if len(content) > 500 else content
+                break
+
+        # Only report output_file if it was actually written — an empty or
+        # missing file counts as failure, which triggers stop-on-failure in
+        # _run_workers_with_deps so dependent levels don't run on missing input.
+        actual_file = output_file if (
+            output_file and os.path.isfile(os.path.join(working_dir, output_file))
+        ) else ""
+
+        return {
+            "sub_task_id": sub_task["id"],
+            "title": sub_task["title"],
+            "output_file": actual_file,
+            "summary": summary,
+        }
 
 
 def _build_worker_task_deepseek(title: str, description: str, output_file: str) -> str:
@@ -164,6 +173,7 @@ def research_subtask(
     sub_task: dict[str, Any],
     working_dir: str,
     backend: str = "deepseek",
+    version: int = 1,
 ) -> dict[str, Any]:
     """Research a single sub-topic and write findings to a file.
 
@@ -171,45 +181,22 @@ def research_subtask(
         sub_task: dict with id, title, description keys.
         working_dir: base working directory.
         backend: LLM backend to use.
+        version: checkpoint version (auto-resumes from previous version if > 1).
 
     Returns:
         dict with sub_task_id, title, output_file, summary keys.
     """
     sub_id = sub_task["id"]
     title = sub_task["title"]
-    description = sub_task["description"]
     safe_title = title.replace(' ', '_').replace('/', '_')[:60]
     output_file = f"research_{sub_id:02d}_{safe_title}.md"
 
-    if backend == "claude_cli":
-        # Pre-fetch arxiv content at the framework level so the claude -p
-        # subprocess never needs to make HTTP requests to arxiv.org.
-        prefetch_files = _prefetch_arxiv_sources(sub_task, working_dir)
-        task = _build_worker_task_claude_cli(title, description, output_file, prefetch_files)
-    else:
-        task = _build_worker_task_deepseek(title, description, output_file)
-
-    result = run_agent(
-        task=task,
+    role = ResearchWorkerRole()
+    role.agent_name = f"worker_{sub_id:02d}"
+    return role.execute(
         working_dir=working_dir,
-        tools=WORKER_TOOLS,
-        tool_map=TOOL_MAP,
-        max_steps=12,
         backend=backend,
-        agent_name=f"worker_{sub_id:02d}",
+        version=version,
+        sub_task=sub_task,
+        output_file=output_file,
     )
-
-    # Extract the final content for a summary
-    summary = ""
-    for msg in reversed(result["messages"]):
-        content = msg.content if hasattr(msg, "content") else str(msg)
-        if len(content) > 100:
-            summary = content[:500] + "..." if len(content) > 500 else content
-            break
-
-    return {
-        "sub_task_id": sub_id,
-        "title": title,
-        "output_file": output_file,
-        "summary": summary,
-    }
