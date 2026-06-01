@@ -1,0 +1,122 @@
+[
+  {
+    "sub_task_id": 5,
+    "title": "Hardware-Aware Attention: FlashAttention and GPU-Optimized Kernels",
+    "output_file": "research_05_Hardware-Aware_Attention:_FlashAttention_and_GPU-Optimized_K.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 10,
+      "justification": "Depth: Exceptional coverage of FA1→FA2→FA3→FA4 progression with precise technical details on tiling, online softmax, warp specialization, conditional softmax rescaling, and 2-CTA MMA. Covers Flash-Decoding, xFormers, cuDNN SDPA, Triton, Ring Attention, Tree Attention — the full attention stack. Specific TFLOPS numbers and IO complexity analysis throughout. Accuracy: Very precise architectural detail; FA4's asymmetric scaling analysis and CuTe-DSL implementation specifics are accurate and well-sourced. Relevance: FlashAttention is arguably the single most impactful attention innovation, enabling the long-context era. The attribution analysis of how hardware-aware attention enabled 32K→128K→1M context scaling is directly relevant. Clarity: Excellent 7-layer attention stack framework gives structure; the 'three pillars of long-context scaling' analysis is exceptionally clear. Hardware details are accessible despite technical depth. Originality: The 'asymmetric scaling trap' framing (B200 MUFU bottleneck), the long-context scaling attribution analysis (70%/40%/30% estimates), and the 'attention compiler' vision are creative, insightful syntheses not found in any single source paper."
+    },
+    "total_score": 47,
+    "rank": 1
+  },
+  {
+    "sub_task_id": 3,
+    "title": "Rotary Position Embeddings and Length Extrapolation",
+    "output_file": "research_03_Rotary_Position_Embeddings_and_Length_Extrapolation.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth: Exceptional. Covers mathematical foundations (Lie algebraic unification), NTK-aware scaling, YaRN with temperature scaling, LongRoPE2 evolutionary search, DPE training-free extension, ALiBi, NoPE, and attention entropy theory. Theoretical and practical dimensions both thoroughly explored. Accuracy: Precise mathematical descriptions of RoPE rotation matrices, NTK-by-parts classification, and YaRN temperature formula. The NoPE challenge is handled with appropriate nuance. Relevance: Position embeddings are fundamental to transformer attention — RoPE is the de facto standard for all major LLMs (LLaMA, Qwen, Mistral, DeepSeek). Length extrapolation is a critical practical challenge. Clarity: Clear progression from mathematical foundations → scaling methods → comparative analysis → best practices. Mathematical notation is clear. The best practices summary for 4K→128K+ extension is practical and actionable. Originality: The entropy-as-unified-framework thesis (connecting RoPE scaling, NoPE, and attention distribution collapse) is insightful synthesis across multiple independent lines of 2024 research. Lie algebraic framework connection provides theoretical depth rarely seen in survey papers."
+    },
+    "total_score": 46,
+    "rank": 2
+  },
+  {
+    "sub_task_id": 4,
+    "title": "Attention Alternatives: State Space Models and Linear RNNs",
+    "output_file": "research_04_Attention_Alternatives:_State_Space_Models_and_Linear_RNNs.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth: Extremely comprehensive — S4→S4D→H3→Mamba-1→Mamba-2 progression with mathematical formulations, RWKV-4 through 7, xLSTM, Griffin/Hawk, hybrid architectures (Jamba, Zamba), and NVIDIA's 8B controlled study. Expressiveness hierarchy (TC⁰ class analysis) adds theoretical depth. Accuracy: The semiseparable matrix framework and SSD duality formulation are precisely described. The functional segregation finding is accurately characterized. Benchmark comparisons are well-sourced. Relevance: Directly relevant — SSMs and linear RNNs are the most credible alternatives to transformer attention, and the SSD duality unifies both paradigms. Clarity: Excellent use of tables (SSD mode comparison, benchmark tables, complexity class hierarchy). The theoretical sections flow naturally into practical comparisons. Originality: The 'endgame question' framing is thought-provoking. The functional segregation insight (SSM for processing, attention for retrieval — 'only 15% of attention heads suffice') is a powerful synthesis with implications beyond this sub-topic. The biological analogy (cortical columns vs. hippocampus) is creative."
+    },
+    "total_score": 46,
+    "rank": 3
+  },
+  {
+    "sub_task_id": 6,
+    "title": "Attention in Multimodal and Cross-Modal Architectures",
+    "output_file": "research_06_Attention_in_Multimodal_and_Cross-Modal_Architectures.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 8,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth: Very comprehensive — covers Flamingo, LLaVA, BLIP-2/3, NVLM systematic comparison, TimeSformer, VideoLLaMA 2, token compression methods (FastV, AIM, HoloV, DyCoke), early vs. late fusion taxonomy, and shared vs. modality-specific attention. Covers both image and video modalities thoroughly. Accuracy: Architectural details are precise (tanh-gating mechanism, Perceiver Resampler dimensions, STC connector architecture). The NAAViT vs LLaViT paradox is well-handled with appropriate caveats. Relevance: Relevant as attention applied in multimodal settings, though slightly more tangential to the core attention mechanism survey than other sub-topics. The cross-attention vs. self-attention debate connects to broader attention design questions. Clarity: Excellent organization with clear conceptual progression. Tables are highly effective (NVLM three-way comparison, fusion strategy taxonomy, training-free pruning methods). Originality: The 'double abstraction' critique (Q-Former's simultaneous compression and semantic abstraction is redundant) is an insightful framing. The 'visual attention necessity paradox' (NAAViT vs LLaViT) is compelling. The decoupling principle ('let compression do compression, let semantics do semantics') generalizes beyond this sub-topic."
+    },
+    "total_score": 45,
+    "rank": 4
+  },
+  {
+    "sub_task_id": 8,
+    "title": "Mixture-of-Experts Attention and Conditional Computation",
+    "output_file": "research_08_Mixture-of-Experts_Attention_and_Conditional_Computation.md",
+    "scores": {
+      "depth": 9,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth: Thorough coverage of MoA, SwitchHead, UMoE, MLA, MoBA, and load-balancing strategies (auxiliary-loss-free, global-batch LBL, MaxScore, ReMoE). Production model analysis (Mixtral, DeepSeek-V2/V3, Qwen2.5/3) with detailed attention design comparisons. Accuracy: Precise descriptions of routing mechanisms and their trade-offs. The efficiency comparison table (MHA/MQA/GQA/MLA/SwitchHead/MoBA) is accurate and well-structured. The TransMLA expressiveness proof is correctly characterized. Relevance: MoE is a key approach to scaling attention efficiently; the connection to sparse attention, KV-cache optimization, and hardware-aware kernels is clearly articulated. Clarity: Well-organized progression from MoA→SwitchHead→UMoE→production models. Tables are very effective. The open questions section is thoughtfully structured. Originality: The 'sparsity moves computation' insight (Smithline 2026) and the 'architecture of sparsity matters more than quality of routing' thesis are compelling. The UMoE finding that attention benefits more from MoE than FFN when structurally aligned is provocatively framed."
+    },
+    "total_score": 45,
+    "rank": 5
+  },
+  {
+    "sub_task_id": 2,
+    "title": "KV-Cache Optimization and Inference Efficiency",
+    "output_file": "research_02_KV-Cache_Optimization_and_Inference_Efficiency.md",
+    "scores": {
+      "depth": 9,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 8,
+      "justification": "Depth: Comprehensive coverage of MQA/GQA (including CLA, QCQA, MLA), quantization (INT8/INT4/TurboQuant/runtime-certified), PagedAttention with production evolution, speculative decoding (MagicDec, TriForce, QuantSpec), attention sinks (StreamingLLM), and eviction policies (7 methods compared). Quantitative performance numbers throughout. Accuracy: Well-supported with specific benchmark numbers (INT8 KV essentially lossless on MMLU; vLLM v0.6.0 2.7× throughput). The MagicDec counter-intuitive finding is correctly explained. Relevance: Highly relevant — KV-cache is the dominant memory bottleneck in LLM inference, directly constraining attention's practical deployability. Clarity: Clear structure, excellent use of the eviction methods comparison table. The 'multiplicative and complementary' framing for GQA+quantization+PagedAttention is clearly argued. Originality: The 'inference compiler' paradigm and the attention arithmetic intensity analysis are insightful. The end-to-end system co-design framing is valuable, though the individual components are well-established rather than novel syntheses."
+    },
+    "total_score": 44,
+    "rank": 6
+  },
+  {
+    "sub_task_id": 1,
+    "title": "Sparse and Linear Attention Mechanisms",
+    "output_file": "research_01_Sparse_and_Linear_Attention_Mechanisms.md",
+    "scores": {
+      "depth": 9,
+      "accuracy": 8,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 8,
+      "justification": "Depth: Very thorough — covers fixed-pattern sparse (Longformer, BigBird, Reformer), dynamic sparse (Quest, SeerAttention, NSA, DELTA), kernel-based linear (Performer/FAVOR+, RALA), low-rank (Linformer, Nyströmformer, LoLCATs), and hybrid architectures (MiniCPM-SALA, SPLA, Samba, Taipan, Hydra). Detailed mathematical formulations for linear attention and low-rank approximations. Accuracy: Well-supported with paper references and specific architectural details. Some performance claims (e.g., Longformer SOTA results) could use more specific numbers. The FAVOR+ description is mathematically precise. Relevance: Most central sub-topic — sparse and linear attention directly addresses the O(n²) bottleneck. The convergence-to-hybrids thesis is directly relevant to the main survey. Clarity: Excellent taxonomy (three paradigms) and clear progression. The 'answer to core research question' section effectively synthesizes findings. Originality: The 'neither pure sparse nor pure linear alone is optimal' and 'extreme sparsity 50-250×' framings are good. The connections section linking to SSMs, MoE, positional encoding, and inference optimization shows cross-topic awareness. Somewhat less novel synthesis compared to the top-ranked submissions."
+    },
+    "total_score": 43,
+    "rank": 7
+  },
+  {
+    "sub_task_id": 7,
+    "title": "Retrieval-Augmented and Memory-Augmented Attention",
+    "output_file": "research_07_Retrieval-Augmented_and_Memory-Augmented_Attention.md",
+    "scores": {
+      "depth": 9,
+      "accuracy": 9,
+      "relevance": 8,
+      "clarity": 9,
+      "originality": 8,
+      "justification": "Depth: Very thorough — covers RAG, FiD, Self-RAG, GraphRAG, REALM, RETRO, Atlas, Infini-attention, Memorizing Transformers, Landmark Attention, RMT, kNN-LM/MT. The Infini-attention delta rule formulation is precise and well-explained. Comparative tables across memory anchor approaches are helpful. Accuracy: Well-supported with specific numbers (RETRO 25× parameter efficiency, Atlas 50×, Infini-attention 114× memory compression). The REALM asynchronous re-embedding challenge is correctly described. Relevance: Relevant as memory-augmented approaches to extending attention's effective context, though retrieval is a somewhat distinct paradigm from core attention mechanism design. The 'breadth vs. depth' framing helps position it within the broader survey. Clarity: Excellent flow. Comparative tables (model comparison, memory anchor approaches) are effective. The 'can retrieval replace long context?' section is well-structured. Originality: The convergence thesis (retrieval and attention as 'not fundamentally different operations — both mechanisms for selective information access') is insightful. The complementary framing (breadth vs. depth) is good. Less novel synthesis compared to the FlashAttention or RoPE submissions."
+    },
+    "total_score": 43,
+    "rank": 8
+  }
+]

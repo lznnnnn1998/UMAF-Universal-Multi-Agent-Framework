@@ -10,23 +10,16 @@ build/
 .claude/
 claude_env_sample.json
 
-
-# Research pipeline output files (generated at runtime)
-research_output/
-scoring_report.json
-research_subtopics.json
-research_proposal.tex
-research_[0-9]*.md
-QAT_*.md
+# Generated pipeline output at project root (allow in subdirectories for demo)
+/scoring_report.json
+/research_subtopics.json
+/research_proposal.tex
+/research_[0-9]*.md
+/QAT_*.md
 
 # Agent logs from all pipeline runs (generated at runtime)
 **/agent_log/
 
-# JSON files in any output directory (generated at runtime)
-*output*/*.json
-*output*/**/*.json
-
-# Coder pipeline output directories (generated at runtime)
+# Non-demo output directories (generated at runtime)
 coderpp_output/
-coderpp_from_research_output/
 coder_output/

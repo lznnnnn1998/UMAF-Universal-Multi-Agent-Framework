@@ -1,0 +1,42 @@
+[
+  {
+    "id": 1,
+    "title": "Sparse and Linear Attention Mechanisms",
+    "description": "Survey recent advances in making self-attention more computationally efficient through sparsity and linearization. Cover: (1) sparse attention patterns such as sliding window (Longformer), global+local (BigBird), and block-sparse approaches; (2) kernel-based linear attention (Performer, Linear Transformer) that approximate softmax attention via feature maps; (3) low-rank approximations like Linformer that project keys and values to a fixed dimension; (4) recent theoretical and empirical comparisons of these methods in terms of speed, memory, and downstream task quality. Research question: Which sparse/linear attention paradigm offers the best accuracy-efficiency trade-off for long-context language modeling in 2024-2026?"
+  },
+  {
+    "id": 2,
+    "title": "KV-Cache Optimization and Inference Efficiency",
+    "description": "Investigate techniques for reducing the key-value cache bottleneck during autoregressive inference. Topics: (1) Multi-Query Attention (MQA) and Grouped-Query Attention (GQA) for reducing KV heads while preserving quality; (2) KV cache quantization (INT8, INT4, KV cache eviction policies); (3) PagedAttention and virtual memory-inspired memory management (vLLM); (4) speculative decoding and its interaction with attention mechanisms; (5) recent 'attention sinks' and streaming LLM findings. Research question: How do GQA + quantization + PagedAttention combine to maximize throughput in production LLM serving systems?"
+  },
+  {
+    "id": 3,
+    "title": "Rotary Position Embeddings and Length Extrapolation",
+    "description": "Examine the family of Rotary Position Embedding (RoPE) methods and how they enable transformers to generalize beyond training context lengths. Cover: (1) the mathematical foundations of RoPE and its properties; (2) NTK-aware scaling, YaRN (Yet another RoPE extensioN method), and position interpolation (PI) for context window extension; (3) Dynamic NTK and code-based RoPE adaptations; (4) comparison with ALiBi and NoPE (no position encoding); (5) how length extrapolation interacts with attention score concentration and entropy. Research question: What are the current best practices for extending a pre-trained RoPE-based LLM from 4K to 128K+ context length with minimal fine-tuning?"
+  },
+  {
+    "id": 4,
+    "title": "Attention Alternatives: State Space Models and Linear RNNs",
+    "description": "Survey emerging architectural alternatives that replace or augment self-attention entirely. Cover: (1) State Space Models (S4, S4D, H3, Mamba-1 and Mamba-2) — their connection to structured attention matrices and semi-separable matrices; (2) RWKV and linear recurrent architectures as attention-free transformers; (3) hybrid architectures that combine SSM layers with attention layers (Jamba, Griffin, Zamba); (4) comparative benchmarks: where do SSMs outperform attention, and where do they fall short? (5) theoretical connections between SSMs and linear attention. Research question: Are hybrid SSM-attention architectures the future of language model design, or will pure SSMs eventually match or surpass attention-based transformers across all tasks?"
+  },
+  {
+    "id": 5,
+    "title": "Hardware-Aware Attention: FlashAttention and GPU-Optimized Kernels",
+    "description": "Analyze how hardware-aware algorithm design has transformed attention computation. Cover: (1) FlashAttention v1 and v2 — the IO-aware tiling strategy and how it reduces HBM access; (2) FlashAttention v3 and Flash-Decoding for long-context inference; (3) how FlashAttention interacts with different GPU architectures (A100, H100, B200) and the roofline model; (4) alternative hardware-aware implementations: xFormers (memory-efficient attention), cuDNN fused attention, and Triton-based kernels; (5) the impact of hardware-aware attention on training throughput and maximum feasible context length. Research question: How much of the recent context-length scaling (32K→128K→1M) is attributable to hardware-aware attention algorithms versus architectural innovations?"
+  },
+  {
+    "id": 6,
+    "title": "Attention in Multimodal and Cross-Modal Architectures",
+    "description": "Examine how attention mechanisms are specialized for multimodal models that process text, images, video, and audio together. Cover: (1) cross-attention designs in vision-language models (Flamingo, LLaVA, BLIP-3) — how visual tokens interact with text tokens; (2) spatial and temporal attention in video understanding (Video-LLaMA, TimeSformer); (3) early fusion vs. late fusion via attention — when to inject cross-modal signals; (4) efficiency challenges of attending over thousands of visual tokens (token compression, Q-Former, perceiver resamplers); (5) shared vs. modality-specific attention weights. Research question: What cross-attention fusion strategy achieves the best multimodal understanding with minimal computational overhead?"
+  },
+  {
+    "id": 7,
+    "title": "Retrieval-Augmented and Memory-Augmented Attention",
+    "description": "Investigate how attention mechanisms are extended with external retrieval and long-term memory capabilities. Cover: (1) retrieval-augmented generation (RAG) architectures where attention attends over both the input and retrieved documents; (2) REALM, Atlas, and RETRO — models that interleave retrieval with self-attention; (3) Infini-attention and compressive memory — maintaining a compressed memory state that persists across segments; (4) memorizing transformers and landmark attention that use special tokens as memory anchors; (5) the kNN-augmented attention mechanism (kNN-LM, nearest-neighbor interpolation in attention space). Research question: Can retrieval-augmented attention effectively replace extremely long context windows, or do the two approaches complement each other?"
+  },
+  {
+    "id": 8,
+    "title": "Mixture-of-Experts Attention and Conditional Computation",
+    "description": "Survey how sparsity is introduced at the capacity level through Mixture-of-Experts (MoE) in attention layers. Cover: (1) MoE applied to attention layers vs. MoE in feed-forward layers — where does sparsity help most? (2) Mixture of Attention Heads (MoA) and SwitchHead — routing individual attention heads based on input; (3) load-balancing strategies for expert routing (auxiliary loss, expert choice, top-k gating); (4) the training and inference efficiency of MoE attention compared to dense attention; (5) recent open-source MoE models (Mixtral, DeepSeek-V2/V3, Qwen-MoE) and their attention design choices. Research question: Does sparsifying attention heads via MoE routing degrade long-range dependency modeling, and how can this be mitigated?"
+  }
+]
