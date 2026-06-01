@@ -324,9 +324,10 @@ class BasePipeline:
                 future = executor.submit(agent_func, item, working_dir, backend)
                 future_to_item[future] = item
 
-            for future, item in future_to_item.items():
+            for future in concurrent.futures.as_completed(future_to_item):
+                item = future_to_item[future]
                 try:
-                    result = future.result(timeout=timeout)
+                    result = future.result(timeout=0)
                 except concurrent.futures.TimeoutError:
                     outputs.append({
                         "sub_task_id": item.get("id"),
@@ -355,9 +356,11 @@ class BasePipeline:
 
         # Retry failures once if enabled
         if retry_failures and failed > 0 and max_retries > 0:
+            id_to_output = {out.get("sub_task_id"): out for out in outputs}
             failed_items = [
-                it for out, it in zip(outputs, items)
-                if not out.get("files") and not out.get("output_file")
+                it for it in items
+                if not id_to_output.get(it.get("id"), {}).get("files")
+                and not id_to_output.get(it.get("id"), {}).get("output_file")
             ]
             if failed_items:
                 retry_outputs, retry_ok, retry_fail = BasePipeline._run_parallel_agents(
@@ -490,13 +493,17 @@ class CoderPipeline(BasePipeline):
                 backend=state.get("backend", backend),
                 requirement=state["requirement"],
             )
-            final_text = ""
-            for m in result.messages:
-                # Only check AI responses — the system prompt contains "REVIEW_FAILED" in instructions
-                if type(m).__name__ == "AIMessage":
-                    content = m.content if hasattr(m, "content") else str(m)
-                    final_text += content
-            review_passed = "REVIEW_PASSED" in final_text and "REVIEW_FAILED" not in final_text
+            review_passed = False
+            for m in reversed(result.messages):
+                if type(m).__name__ != "AIMessage":
+                    continue
+                content = m.content if hasattr(m, "content") else str(m)
+                if "REVIEW_PASSED" in content and "REVIEW_FAILED" not in content:
+                    review_passed = True
+                    break
+                elif "REVIEW_FAILED" in content:
+                    review_passed = False
+                    break
             serialized = []
             for m in result.messages:
                 serialized.append({
@@ -855,7 +862,7 @@ class ResearchPipeline(BasePipeline):
                 return {
                     "worker_outputs": all_outputs,
                     "status": "worker_retry",
-                    "version": new_version + 1,
+                    "version": new_version,
                     "worker_stats": {"total": len(sub_tasks), "succeeded": total_succeeded,
                                      "failed": total_failed, "duplicates_skipped": dupes,
                                      "retries": worker_retry_count},

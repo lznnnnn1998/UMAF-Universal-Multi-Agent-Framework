@@ -306,6 +306,7 @@ class BaseAgent:
         self.consecutive_errors = 0
         self.known_unavailable: set[str] = set()
         self._t0: float = 0.0
+        self._last_parse_error: str | None = None
 
     # --- Public API ---
 
@@ -385,17 +386,16 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
     @staticmethod
     def _translate_task_for_claude(task: str) -> str:
         for py_name, cli_name in BaseAgent._TOOL_NAMES_TO_TRANSLATE:
-            result = re.sub(
+            task = re.sub(
                 rf'`{re.escape(py_name)}`|\b{re.escape(py_name)}\b',
                 cli_name,
                 task,
             )
-        return result
+        return task
 
     # --- Tool call parsing ---
 
-    @staticmethod
-    def _parse_tool_call(text: str) -> dict[str, Any] | None:
+    def _parse_tool_call(self, text: str) -> dict[str, Any] | None:
         start_pattern = r'\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*\{'
         matches = list(re.finditer(start_pattern, text))
         if not matches:
@@ -454,11 +454,8 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
                 errors.append(f"[{tool_name}] missing 'tool' or 'args' key")
 
         if errors:
-            BaseAgent._last_parse_error = "; ".join(errors[:3])
+            self._last_parse_error = "; ".join(errors[:3])
         return None
-
-    # Thread-local slot for parse error feedback
-    _last_parse_error: str | None = None
 
     @staticmethod
     def _is_persistent_error(result: str) -> bool:
@@ -542,9 +539,9 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
 
             if not tool_call:
                 detail = ""
-                if BaseAgent._last_parse_error:
-                    detail = f"\n\nParse error details: {BaseAgent._last_parse_error}"
-                    BaseAgent._last_parse_error = None
+                if self._last_parse_error:
+                    detail = f"\n\nParse error details: {self._last_parse_error}"
+                    self._last_parse_error = None
                 self.messages.append(HumanMessage(
                     content="No valid tool call found in your response. "
                             "Either call a tool using the JSON format or output TASK_COMPLETE if done."
@@ -579,10 +576,18 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
             self.known_unavailable.add(tool_name)
         else:
             func = self.tool_map[tool_name]
+            result = ""
             try:
                 result = func(**tool_args, working_dir=self.working_dir)
-            except TypeError:
-                result = func(**tool_args)
+            except TypeError as e_working_dir:
+                # Retry without working_dir (some tools accept it, some don't)
+                try:
+                    result = func(**tool_args)
+                except TypeError as e_no_wd:
+                    result = (
+                        f"Error: invalid arguments for '{tool_name}'. "
+                        f"Got: {tool_args}. Details: {e_no_wd}"
+                    )
 
         if tool_name in ("write_file", "write_lines") and not result.startswith("Error"):
             self.has_written_output = True
@@ -612,7 +617,7 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
 
     def _maybe_force_wrapup(self, steps_left: int):
         if steps_left <= _FORCE_WRAPUP_THRESHOLD:
-            urgency = "This is your LAST step." if steps_left == 0 else f"Only {steps_left} step(s) remaining."
+            urgency = "You have exhausted your step budget — this is your FINAL chance." if steps_left == 0 else f"Only {steps_left} step(s) remaining."
             if self.has_written_output:
                 # Files already exist — just need to conclude
                 self.messages.append(HumanMessage(content=(
@@ -847,7 +852,10 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
                                         f"{json.dumps(tu.get('input', {}), ensure_ascii=False)}]"
                             ))
 
-                        if "TASK_COMPLETE" in final_text:
+                        # Only check the current turn's text for TASK_COMPLETE,
+                        # not accumulated text — earlier turns may mention
+                        # "TASK_COMPLETE" in paraphrased instructions.
+                        if "TASK_COMPLETE" in text:
                             success = True
                             _flush_ckpt()
                             break
