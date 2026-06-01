@@ -136,6 +136,82 @@ Topic: *"model quantization: QAT, PTQ, stochastic rounding during training"*
 - Pipeline time: ~12 minutes
 - Research files: 11-21 KB each; LaTeX output generated
 
+## Demo Outcomes
+
+The `v1.4-demo` branch includes outputs from three pipeline runs demonstrating the full UMAF workflow:
+
+```
+Research Pipeline #1          Research Pipeline #2          CoderPP Pipeline
+"attention mechanism          "propose a novel              "implement attention
+ survey"                      attention mechanism"          mechanisms from
+       │                              │                      research_output/"
+       ▼                              ▼                              │
+research_output/            research_output_further/                ▼
+       │                              │                coderpp_from_research_output/
+       └──────────────────────────────┴──────────────────────────────┘
+```
+
+### Run 1: `research_output/` — Attention Mechanism Survey
+
+```
+python3 main.py -m research -b claude_cli -w research_output \
+  "attention mechanism survey: sparse attention, KV-cache, RoPE, SSM, FlashAttention"
+```
+
+| Output | Description |
+|---|---|
+| `decomposition.json` | 8 sub-topics from head agent |
+| `research_01–08_*.md` | 28–39 KB each, 8 research reports |
+| `scoring_report.json` | 5-dimension scores for all workers |
+| `research_proposal.tex` | 46 KB LaTeX synthesis |
+
+### Run 2: `research_output_further/` — Novel Attention Proposal
+
+Takes `research_proposal.tex` from Run 1 as input to propose a brand new mechanism.
+
+```
+python3 main.py -m research -b claude_cli -w research_output_further \
+  "propose a brand new optimized attention mechanism based on research_output/research_proposal.tex"
+```
+
+| Output | Description |
+|---|---|
+| `decomposition.json` | 7 sub-topics with dependencies |
+| `research_01–07_*.md` | 34–62 KB each, dependency-ordered |
+| `scoring_report.json` | Scores: 48, 47, 45, 44, 43, 39, 38 / 50 |
+| `research_proposal.tex` | 60 KB, 11 sections, 17 equations, 13 tables, 47 refs |
+
+**Top-scored worker (48/50):** [research_02](research_output_further/research_02_Novel_Attention_Formulation:_Mathematical_Definition_and_Cor.md) — *Novel Attention Formulation: Mathematical Definition and Core Theorems*
+
+### Run 3: `coderpp_from_research_output/` — Multi-File Code Generation
+
+Given `research_output/` as input, the CoderPP pipeline organizes, generates, and reviews 6 Python modules implementing the surveyed attention mechanisms.
+
+```
+python3 main.py -m coderpp -b claude_cli -w coderpp_from_research_output \
+  "implement attention mechanisms from research_output/"
+```
+
+| Output | Description |
+|---|---|
+| `decomposition.json` | 6 modules from organizer |
+| `OBSERVATIONS.md`, `ENVIRONMENT.md` | Organizer rationale & setup notes |
+| `modules/` | **6 Python packages** (below) |
+| `project/` | Assembled runnable project with `main.py`, `setup.py` |
+
+**Generated modules:**
+
+| Module | Lines | Key Implementations |
+|---|---|---|
+| `state_space_models/` | ~4,300 | S4, S4D, S6, Mamba, Mamba-2, HiPPO, parallel scan |
+| `flash_attention/` | ~2,600 | Tiled attention, online softmax, quantization, recomputation |
+| `linear_recurrent/` | ~2,500 | RetNet, xLSTM, RWKV, Griffin, common kernels |
+| `rope_extrapolation/` | ~2,600 | RoPE, NTK, PI, YaRN, DPE, extrapolation methods |
+| `hybrid_architectures/` | ~1,900 | Mega, GLA, H3, MoE mixer, hybrid SSM/attention |
+| `evaluation/` | ~3,000 | Throughput, perplexity, entropy, roofline, length extrapolation |
+
+Each module includes `__init__.py`, implementation, unit tests (`test_*.py`), `review.md` (reviewer feedback), and `log.md` (build log).
+
 ## Configuration
 
 ### DeepSeek Backend
