@@ -9,7 +9,7 @@ class ResearchDecomposerRole(BaseDecomposerRole):
     """Decompose a research topic into 2-8 sub-topics, scaled to its complexity."""
 
     agent_name = "head_decompose"
-    max_steps = 8
+    max_steps = 16
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.research_decomposer_tools(backend))
@@ -20,15 +20,15 @@ class ResearchDecomposerRole(BaseDecomposerRole):
         return (
             "You are a research coordinator. Analyze the complexity of this "
             "research topic and decompose it into an appropriate number of "
-            "sub-topics — at least 2 and at most 8.\n\n"
+            "sub-topics — at least 2 and at most 12.\n\n"
             f"Research topic: {input_spec}"
         )
 
     def _sizing_guide(self) -> str:
         return (
-            "- **Narrow / specific topic** (e.g. a single method or technique): 2-3 sub-topics\n"
-            "- **Moderate topic** (e.g. a family of techniques or one research area): 4-5 sub-topics\n"
-            "- **Broad / complex topic** (e.g. a whole field or comparing multiple paradigms): 6-8 sub-topics"
+            "- **Narrow / specific topic** (e.g. a single method or technique): 3-5 sub-topics\n"
+            "- **Moderate topic** (e.g. a family of techniques or one research area): 5-8 sub-topics\n"
+            "- **Broad / complex topic** (e.g. a whole field or comparing multiple paradigms): 8-12 sub-topics"
         )
 
     def _sub_unit_requirements(self) -> str:
@@ -37,7 +37,7 @@ class ResearchDecomposerRole(BaseDecomposerRole):
             "- Include concrete research questions or areas to explore\n"
             "- Cover different angles of the main topic\n"
             "- Declare dependencies on other sub-topics (by id) when findings from that sub-topic are required input\n"
-            "- Be suitable for a 15-minute focused research session"
+            "- Be suitable for a 25-minute focused research session"
         )
 
     @staticmethod
@@ -71,7 +71,7 @@ class ResearchDecomposerRole(BaseDecomposerRole):
             keywords = [input_spec]
 
         templates: list[dict[str, Any]] = []
-        kw_limit = min(len(keywords), 6)
+        kw_limit = min(len(keywords), 12)
         for i in range(kw_limit):
             kw = keywords[i].strip().rstrip('.')
             templates.append({

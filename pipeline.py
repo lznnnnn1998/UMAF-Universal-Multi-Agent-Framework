@@ -559,10 +559,10 @@ from research.worker_agent import research_subtask
 from research.reviewer_agent import review_and_score
 from research.writer import write_proposal
 
-HEAD_TIMEOUT = 120
-WORKER_TIMEOUT = 600
-RESEARCH_MAX_VERSIONS = 4
-RESEARCH_MAX_WORKER_RETRIES = 3
+HEAD_TIMEOUT = 300
+WORKER_TIMEOUT = 900
+RESEARCH_MAX_VERSIONS = 6
+RESEARCH_MAX_WORKER_RETRIES = 5
 
 
 class ResearchState(TypedDict):

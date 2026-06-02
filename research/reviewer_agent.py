@@ -10,7 +10,7 @@ class ResearchReviewerRole(AgentRole):
     """Review all worker outputs, score them, and return ranked results."""
 
     agent_name = "reviewer"
-    max_steps = 15
+    max_steps = 25
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.research_reviewer_tools())

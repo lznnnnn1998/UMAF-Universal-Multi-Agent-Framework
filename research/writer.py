@@ -54,7 +54,7 @@ class WriterRole(AgentRole):
     """Generate a LaTeX research proposal from the top-scored submissions."""
 
     agent_name = "writer"
-    max_steps = 12
+    max_steps = 25
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.writer_tools())

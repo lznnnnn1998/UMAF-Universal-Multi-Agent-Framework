@@ -9,7 +9,7 @@ class ResearchWorkerRole(AgentRole):
     """Research a single sub-topic and write findings to a markdown file."""
 
     agent_name = "worker"
-    max_steps = 12
+    max_steps = 22
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.research_worker_tools())
