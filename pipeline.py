@@ -792,14 +792,39 @@ class ResearchPipeline(BasePipeline):
 
                 if worker_retry_count >= RESEARCH_MAX_WORKER_RETRIES:
                     print(f"\n[research worker retry] Max retries ({RESEARCH_MAX_WORKER_RETRIES}) reached. "
-                          f"Proceeding with {len(id_to_output)}/{len(sub_tasks)} workers.")
+                          f"{len(id_to_output)}/{len(sub_tasks)} workers have output.")
+
+                    # Try one last pass with all remaining workers — downstream
+                    # workers that were deferred by an early break may still
+                    # produce useful output via independent research.
+                    still_pending = [
+                        st for st in sub_tasks
+                        if st["id"] not in id_to_output
+                    ]
+                    if still_pending:
+                        print(f"  Final attempt for {len(still_pending)} remaining worker(s): "
+                              f"{[t['id'] for t in still_pending]}")
+                        final_version = version + 1
+                        outputs, succeeded, final_failed = BasePipeline._run_workers_with_deps(
+                            still_pending,
+                            lambda item, wd, be: research_subtask(item, wd, be, version=final_version),
+                            working_dir, backend, WORKER_TIMEOUT,
+                        )
+                        for out in outputs:
+                            if out.get("output_file"):
+                                # Verify file actually exists on disk
+                                fp = os.path.join(working_dir, out["output_file"])
+                                if os.path.exists(fp) and os.path.getsize(fp) > 0:
+                                    id_to_output[out["sub_task_id"]] = out
+
+                    # Placeholders only for workers that still have no output
                     for st in sub_tasks:
                         if st["id"] not in id_to_output:
                             id_to_output[st["id"]] = {
                                 "sub_task_id": st["id"],
                                 "title": st["title"],
                                 "output_file": "",
-                                "summary": "Worker failed after max retries.",
+                                "summary": "Worker did not produce output after all retries.",
                             }
                     return {
                         "worker_outputs": list(id_to_output.values()),

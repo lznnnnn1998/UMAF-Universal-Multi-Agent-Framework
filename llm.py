@@ -34,7 +34,7 @@ class DeepSeekProvider(LLMProvider):
         base_url: str = "https://api.deepseek.com/v1",
         api_key: str | None = None,
         temperature: float = 0.3,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ):
         self._llm = ChatOpenAI(
             model=model,

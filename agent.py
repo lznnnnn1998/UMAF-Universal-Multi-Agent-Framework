@@ -333,26 +333,37 @@ class BaseAgent:
 {tools_text}
 
 ## Output Format
-To call a tool, output a JSON block exactly like this:
-```json
-{{"tool": "tool_name", "args": {{"param1": "value1", "param2": "value2"}}}}
-```
+To call a tool, output a JSON object on its own line(s):
+{{"tool": "tool_name", "args": {{"param1": "value1"}}}}
 
-You may output reasoning or explanations before or after the JSON block. The tool result will be shown to you.
+You may output reasoning or explanations before or after the JSON object. The tool result will be shown to you.
 
-When the task is complete, output: TASK_COMPLETE
+When the task is fully complete, output: TASK_COMPLETE
 
-## Write Strategy
-For `write_lines`, break large files into MULTIPLE smaller calls (max ~40 lines each).
-Smaller JSON blocks are more likely to parse correctly. Write the file in sections:
-- First call writes the first 30-40 lines
-- Next call(s) append the remaining sections
-Each call to the same path overwrites, so plan your chunks accordingly.
+## CRITICAL — JSON Escaping Rules
+Every JSON string value MUST be valid JSON. The most common mistake is unescaped
+characters inside string values. You MUST escape:
+  - backslash   \\\\   (becomes \\\\ in JSON)
+  - double-quote \\\"  (becomes \\\" in JSON)
+  - newline     \\n    (becomes \\n in JSON)
+  - tab         \\t    (becomes \\t in JSON)
+
+## Write Strategy (READ CAREFULLY)
+**Preferred method for code/large files**: use `run_command` with a Python one-liner.
+This avoids ALL JSON escaping issues:
+  {{"tool": "run_command", "args": {{"command": "python3 -c \\"open('output.py','w').write('''...your code here...''')\\"", "description": "Write output file"}}}}
+Make sure any double quotes INSIDE the Python string are escaped: \\\\\"
+
+**Alternative — write_lines**: break large files into MULTIPLE calls (max ~30 lines each).
+Each line is a separate array element — this avoids multi-line escaping issues.
+
+**Last resort — write_file**: use only for SHORT content (<10 lines). The content field
+is a single JSON string where ALL special characters must be escaped.
 
 ## Working Directory
-All file paths are relative to the provided working directory. Do NOT prepend the working directory name to any path or command.
-- `write_file` / `write_lines` / `read_file`: the path is resolved relative to the working directory automatically.
-- `run_command`: commands ALREADY execute inside the working directory. Do NOT `cd <working_dir>` — you are already there. Use paths like `modules/x/` not `<working_dir>/modules/x/`."""
+All file paths are relative to the working directory. Do NOT prepend the working directory name.
+- `write_file` / `write_lines` / `read_file`: paths are resolved relative to the working directory.
+- `run_command`: commands ALREADY execute inside the working directory. Do NOT `cd <working_dir>`."""
 
     def _build_claude_cli_prompt(self) -> str:
         tool_lines = []
@@ -396,21 +407,54 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
     # --- Tool call parsing ---
 
     def _parse_tool_call(self, text: str) -> dict[str, Any] | None:
-        start_pattern = r'\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*\{'
+        errors: list[str] = []
+
+        # --- Pre-process: strip markdown code fences ---
+        clean_text = text
+        fence_pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
+        fence_matches = list(re.finditer(fence_pattern, text, re.DOTALL))
+        if fence_matches:
+            # Try parsing from each code block first, then fall back to raw text
+            for fm in reversed(fence_matches):
+                result = self._try_extract_json(fm.group(1), errors)
+                if result:
+                    return result
+
+        # --- Strategy 1: standard pattern ---
+        result = self._try_extract_json(clean_text, errors, strict_order=True)
+        if result:
+            return result
+
+        # --- Strategy 2: reversed key order {"args":..., "tool":...} ---
+        result = self._try_extract_json(clean_text, errors, strict_order=False)
+        if result:
+            return result
+
+        if errors:
+            self._last_parse_error = "; ".join(errors[:3])
+        return None
+
+    def _try_extract_json(self, text: str, errors: list[str],
+                          strict_order: bool = True) -> dict[str, Any] | None:
+        """Try to find and parse a JSON tool-call object in *text*.
+
+        When *strict_order* is True, ``"tool"`` must appear before ``"args"``
+        (the standard prompt format).  When False, either key order is accepted.
+        """
+        if strict_order:
+            start_pattern = r'\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*\{'
+        else:
+            start_pattern = r'\{\s*"(?:tool"|args")\s*:\s*'
+
         matches = list(re.finditer(start_pattern, text))
         if not matches:
             return None
 
-        errors: list[str] = []
-
-        # Try each tool-call candidate in the response (last one first — it's
-        # usually the most recent and least likely to be a code example).
+        # Try each candidate (last one first — usually the most recent).
         for match in reversed(matches):
-            tool_name = match.group(1)
             outer_start = match.start()
 
-            # Brace-count with JSON string tracking — content values may contain
-            # unescaped braces that would throw off naive depth counting.
+            # Brace-count with JSON string tracking.
             depth = 0
             in_string = False
             escape_next = False
@@ -440,22 +484,92 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
                 continue
 
             json_str = text[outer_start:end_pos + 1]
+
+            # --- Attempt 1: strict parse ---
             try:
                 obj = json.loads(json_str)
-                return {"tool": obj["tool"], "args": obj["args"]}
+                if "tool" in obj and "args" in obj:
+                    return {"tool": obj["tool"], "args": obj["args"]}
+                errors.append(f"JSON parsed but missing 'tool'/'args' keys")
+                continue
+            except json.JSONDecodeError as e:
+                pass  # fall through to repair attempts
+
+            # --- Attempt 2: repair common JSON errors ---
+            repaired = self._repair_json(json_str)
+            if repaired:
+                try:
+                    obj = json.loads(repaired)
+                    if "tool" in obj and "args" in obj:
+                        return {"tool": obj["tool"], "args": obj["args"]}
+                except json.JSONDecodeError:
+                    pass
+
+            # --- Record the original parse error for diagnostics ---
+            try:
+                json.loads(json_str)
             except json.JSONDecodeError as e:
                 snippet_start = max(0, e.pos - 40)
                 snippet_end = min(len(json_str), e.pos + 40)
                 errors.append(
-                    f"[{tool_name}] pos {e.pos}: {e.msg} "
+                    f"pos {e.pos}: {e.msg} "
                     f"near ...{json_str[snippet_start:snippet_end]}..."
                 )
-            except KeyError:
-                errors.append(f"[{tool_name}] missing 'tool' or 'args' key")
 
-        if errors:
-            self._last_parse_error = "; ".join(errors[:3])
         return None
+
+    @staticmethod
+    def _repair_json(json_str: str) -> str | None:
+        """Try to repair common LLM JSON mistakes.  Returns repaired string or None."""
+        repaired = json_str
+
+        # 1. Trailing comma before closing brace: ,}  →  }
+        repaired = re.sub(r',\s*}', '}', repaired)
+
+        # 2. Trailing comma before closing bracket: ,]  →  ]
+        repaired = re.sub(r',\s*]', ']', repaired)
+
+        # 3. Unescaped literal newlines / tabs inside string values.
+        #    Strategy: inside a JSON string, \n and \t are valid escape sequences,
+        #    but raw newlines and tabs are not.  We replace raw newlines and tabs
+        #    that appear inside double-quoted strings with their escape sequences.
+        repaired = BaseAgent._escape_raw_whitespace_in_strings(repaired)
+
+        if repaired == json_str:
+            return None
+        return repaired
+
+    @staticmethod
+    def _escape_raw_whitespace_in_strings(s: str) -> str:
+        """Replace raw newlines and tabs inside JSON string values with \\n and \\t."""
+        result: list[str] = []
+        in_string = False
+        escape_next = False
+        for ch in s:
+            if escape_next:
+                escape_next = False
+                result.append(ch)
+                continue
+            if ch == '\\':
+                escape_next = True
+                result.append(ch)
+                continue
+            if ch == '"':
+                in_string = not in_string
+                result.append(ch)
+                continue
+            if in_string:
+                if ch == '\n':
+                    result.append('\\n')
+                    continue
+                if ch == '\t':
+                    result.append('\\t')
+                    continue
+                if ch == '\r':
+                    result.append('\\r')
+                    continue
+            result.append(ch)
+        return ''.join(result)
 
     @staticmethod
     def _is_persistent_error(result: str) -> bool:
@@ -540,15 +654,22 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
             if not tool_call:
                 detail = ""
                 if self._last_parse_error:
-                    detail = f"\n\nParse error details: {self._last_parse_error}"
+                    detail = (
+                        f"\n\nYour last response had JSON errors: {self._last_parse_error}\n"
+                        "Common causes: unescaped backslashes, unescaped double-quotes, "
+                        "or raw newlines inside a JSON string value."
+                    )
                     self._last_parse_error = None
                 self.messages.append(HumanMessage(
                     content="No valid tool call found in your response. "
-                            "Either call a tool using the JSON format or output TASK_COMPLETE if done."
+                            "You MUST either call a tool using the JSON format "
+                            '{"tool": "<name>", "args": {...}} '
+                            "or output TASK_COMPLETE if done."
                             f"{detail}\n\n"
-                            "If your write_file content is very large, ensure all special characters "
-                            "are properly escaped: backslashes \\\\, double-quotes \\\", newlines \\n, "
-                            "and tabs \\t. Use a JSON-valid string for the content field."
+                            "HINT: If you are trying to write code, use `run_command` with a Python "
+                            "one-liner instead of `write_file` — it avoids JSON escaping issues entirely. "
+                            "Example: python3 -c \"open('out.py','w').write('''...code...''')\" "
+                            "(wrap the Python script in double quotes, use triple single-quotes for content)."
                 ))
 
         # Post-loop forced summary
@@ -667,12 +788,13 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
         else:
             self.messages.append(HumanMessage(content=(
                 "You have exhausted all your steps. You did NOT write the output file yet, "
-                "which was the primary goal of this task. Call write_lines IMMEDIATELY with "
-                "your best-effort findings — use whatever notes and information you have gathered. "
-                "Write the file now as a single JSON block, then output TASK_COMPLETE. "
-                "IMPORTANT: Use the lines array (list of strings) for code — each line is a separate "
-                "string, which avoids multi-line escaping problems. "
-                "If you skip writing the file again, the task will fail completely."
+                "which was the primary goal of this task. You MUST write your output NOW. "
+                "PREFERRED: use `run_command` with a Python one-liner to write the file — "
+                "this completely avoids JSON escaping problems. "
+                "Example: python3 -c \"open('OUTPUT','w').write('''...content...''')\" "
+                "(wrap Python script in double quotes, use triple single-quotes for content).\n"
+                "ALTERNATIVE: use `write_lines` with each line as a separate array element. "
+                "Then output TASK_COMPLETE. If you skip writing, the task fails completely."
             )))
         try:
             response = llm.invoke(self.messages)
@@ -691,9 +813,9 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
             # One more retry if write_file/write_lines still didn't happen
             if not self.has_written_output:
                 self.messages.append(HumanMessage(content=(
-                    "You STILL haven't written your output. Output ONLY a single JSON block: "
-                    '{"tool": "write_lines", "args": {"path": "YOUR_OUTPUT_PATH", "lines": ["line1", "line2", ...]}} '
-                    "Each line is a separate string — this avoids escaping issues with multi-line content. "
+                    "You STILL haven't written your output. Use `run_command` with a Python "
+                    "one-liner to write the file NOW — it's the most reliable method. "
+                    "Write the file, then output TASK_COMPLETE."
                     "Then output TASK_COMPLETE."
                 )))
                 response2 = llm.invoke(self.messages)

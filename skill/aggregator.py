@@ -66,10 +66,7 @@ class SkillAggregatorRole(AgentRole):
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         """Only need Read and Write — no external commands needed."""
-        return ToolRegistry.to_dicts([
-            ToolRegistry.READ_FILE,
-            ToolRegistry.WRITE_FILE,
-        ])
+        return ToolRegistry.to_dicts(ToolRegistry.skill_aggregator_tools())
 
     # ── Task prompt ─────────────────────────────────────────────────────
 

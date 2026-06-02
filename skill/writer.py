@@ -67,10 +67,7 @@ class SkillReportWriterRole(AgentRole):
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         """Only need Read and Write — reads inventory, writes reports."""
-        return ToolRegistry.to_dicts([
-            ToolRegistry.READ_FILE,
-            ToolRegistry.WRITE_FILE,
-        ])
+        return ToolRegistry.to_dicts(ToolRegistry.skill_writer_tools())
 
     # ── Task prompt ─────────────────────────────────────────────────────
 

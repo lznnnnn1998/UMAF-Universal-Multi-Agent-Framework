@@ -1,7 +1,10 @@
 import argparse
+import json
 import sys
+from pathlib import Path
 
 from pipeline import CoderPipeline, ResearchPipeline, CoderPPPipeline, TopologyPipeline, SkillPipeline
+from tools import ToolRegistry
 
 PIPELINES = {
     "coder": CoderPipeline,
@@ -10,6 +13,28 @@ PIPELINES = {
     "topology": TopologyPipeline,
     "skill": SkillPipeline,
 }
+
+
+def _load_tools_config(path: str) -> dict[str, dict[str, list[str]]]:
+    """Load a tools configuration JSON file.
+
+    Returns the parsed dict suitable for ToolRegistry.set_tool_config().
+    Exits with an error message if the file is missing or invalid.
+    """
+    config_path = Path(path)
+    if not config_path.exists():
+        print(f"Error: tools config file not found: {config_path}")
+        sys.exit(1)
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error: invalid JSON in tools config: {e}")
+        sys.exit(1)
+    if not isinstance(config, dict):
+        print("Error: tools config must be a JSON object mapping pipeline names to role→tool-list dicts.")
+        sys.exit(1)
+    return config
 
 
 def main():
@@ -42,6 +67,11 @@ def main():
         "--yes", "-y", action="store_true",
         help="Skip the decomposition confirmation prompt",
     )
+    parser.add_argument(
+        "--tools-config", default=None,
+        help="Path to a JSON file specifying tool overrides per pipeline/role "
+             "(see tools_config.example.json for format)",
+    )
     args = parser.parse_args()
 
     requirement = args.requirement
@@ -55,6 +85,12 @@ def main():
     if not requirement:
         print("Error: no requirement/topic provided.")
         sys.exit(1)
+
+    # Apply tool overrides from JSON config before creating the pipeline
+    if args.tools_config:
+        config = _load_tools_config(args.tools_config)
+        ToolRegistry.set_tool_config(config)
+        print(f"Applied tools config: {args.tools_config}")
 
     pipeline_cls = PIPELINES[args.mode]
     pipeline = pipeline_cls(

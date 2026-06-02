@@ -1,0 +1,12 @@
+{
+  "__timeouts__": {
+    "call_claude": 300,
+    "run_command": 60
+  },
+  "research": {
+    "decomposer": ["read_file", "write_file", "run_command", "call_claude"],
+    "worker": ["read_file", "write_file", "run_command", "call_claude"],
+    "reviewer": ["read_file", "write_file"],
+    "writer": ["read_file", "write_file", "write_lines"]
+  }
+}

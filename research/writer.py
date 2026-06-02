@@ -51,10 +51,16 @@ __BIB_PLACEHOLDER__
 
 
 class WriterRole(AgentRole):
-    """Generate a LaTeX research proposal from the top-scored submissions."""
+    """Generate a LaTeX research proposal from the top-scored submissions.
+
+    Uses sectioned output: each research work gets its own .tex file, and a
+    main file includes them via ``\\input{}``.  This avoids the monolithic
+    write_file truncation problem that occurs when a single file exceeds the
+    LLM's JSON tool-call token limit.
+    """
 
     agent_name = "writer"
-    max_steps = 25
+    max_steps = 40
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.writer_tools())
@@ -76,29 +82,59 @@ class WriterRole(AgentRole):
 ## Scored Research Works (all available)
 {file_list}
 
+## WRITING STRATEGY — SECTIONED OUTPUT (CRITICAL)
+The complete document is too large for a single write_file call. Instead, write each
+section to a SEPARATE .tex file, then write a main file that includes them all.
+
+For each research work, write ONE section file:
+  - `section_01_title.tex`, `section_02_title.tex`, ... (one per work, using write_file)
+
+Then write the MAIN file `research_proposal.tex` with:
+  - Full preamble (documentclass, packages, title, etc.)
+  - \\begin{{document}} and \\maketitle
+  - \\begin{{abstract}} ... \\end{{abstract}}
+  - \\tableofcontents
+  - One \\input{{...}} command per section file
+  - The scoring summary table
+  - Bibliography
+  - \\end{{document}}
+
 ## Instructions
-1. Read ALL of the research output files listed above using `read_file`. You have access to every scored work — not just the top few.
-2. Synthesize the findings into well-structured LaTeX sections (`\\section{{...}}`) that together form a coherent proposal. Use proper LaTeX formatting:
+1. Read ALL of the research output files listed above using `read_file`.
+2. Write an abstract (150-250 words) summarizing the proposal.
+3. For EACH research work, write a separate .tex section file:
+   - Use `\\section{{...}}` as the top-level heading
    - `\\subsection{{...}}` for sub-topics
    - `\\textbf{{...}}` and `\\textit{{...}}` for emphasis
    - `itemize` or `enumerate` for lists
-   - `\\begin{{quote}}...\\end{{quote}}` for key insights
    - Math mode `$...$` or `$$...$$` where appropriate
-3. You decide which works to emphasize and how to organize the proposal — include the most relevant findings from each work. Works with higher scores are generally more reliable, but lower-scored works may contain essential material (e.g., error bounds, position encoding) that the proposal needs.
-4. Write an abstract (150-250 words) summarizing the proposal and its contribution to the main topic.
-5. Write a scoring summary section with a table showing scores for each dimension across all works.
-6. Include a bibliography section with references from the research.
-7. Use `write_file` to save the FULL LaTeX document to `research_proposal.tex`.
-8. Output TASK_COMPLETE when done.
+   - Each file should be complete LaTeX content (no preamble needed)
+4. Write `research_proposal.tex` — the main file with FULL preamble and \\input{{}} for each section.
+5. Also write the scoring summary table and bibliography into the main file (or as separate files if large).
+6. After writing ALL files, read `research_proposal.tex` to verify it includes all \\input commands.
+7. Output TASK_COMPLETE when done.
 
-IMPORTANT: Generate the COMPLETE LaTeX document with preamble and all sections. The document MUST compile with pdflatex. Use proper LaTeX escaping for special characters (&, %, $, #, _, {{, }}, ~, ^, \\)."""
+## LaTeX Formatting Rules
+- Use proper LaTeX escaping for special characters (&, %, $, #, _, ~, ^).
+- Do NOT escape \\, {{, }} that are part of LaTeX commands.
+- The document MUST compile with pdflatex.
+
+## Expected Output Files
+- `research_proposal.tex` (main file with preamble and \\input commands)
+- `section_01_*.tex` through `section_NN_*.tex` (one per research work)
+
+IMPORTANT: Write each section as a SEPARATE file. Do NOT try to put everything in one file."""
 
     def parse_result(self, result, working_dir: str, topic: str = "",
                      scored_works: list[dict[str, Any]] | None = None, **context: Any) -> str:
         assert scored_works is not None
         tex_path = os.path.join(working_dir, "research_proposal.tex")
-        if os.path.exists(tex_path):
-            return tex_path
+        if os.path.exists(tex_path) and os.path.getsize(tex_path) > 200:
+            # Check that at least some \input commands are present
+            with open(tex_path) as f:
+                content = f.read(4096)
+            if r"\input{" in content or r"\include{" in content:
+                return tex_path
         return _fallback_latex(scored_works, topic, working_dir)
 
 

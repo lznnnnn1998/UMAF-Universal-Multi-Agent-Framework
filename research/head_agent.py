@@ -9,7 +9,7 @@ class ResearchDecomposerRole(BaseDecomposerRole):
     """Decompose a research topic into 2-8 sub-topics, scaled to its complexity."""
 
     agent_name = "head_decompose"
-    max_steps = 16
+    max_steps = 25
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.research_decomposer_tools(backend))

@@ -9,7 +9,7 @@ class ResearchWorkerRole(AgentRole):
     """Research a single sub-topic and write findings to a markdown file."""
 
     agent_name = "worker"
-    max_steps = 22
+    max_steps = 40
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.research_worker_tools())
@@ -20,10 +20,14 @@ class ResearchWorkerRole(AgentRole):
         title = sub_task["title"]
         description = sub_task["description"]
 
+        # Determine which tools are available so the prompt can be tailored
+        tool_specs = self.tools_for_backend(backend)
+        tool_names = {t["name"] for t in tool_specs} if tool_specs else set()
+
         if backend == "claude_cli":
             prefetch_files = _prefetch_arxiv_sources(sub_task, context.get("working_dir", "."))
-            return _build_worker_task_claude_cli(title, description, output_file, prefetch_files)
-        return _build_worker_task_deepseek(title, description, output_file)
+            return _build_worker_task_claude_cli(title, description, output_file, prefetch_files, tool_names)
+        return _build_worker_task_deepseek(title, description, output_file, tool_names)
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      sub_task: dict | None = None, output_file: str = "", **context: Any) -> dict[str, Any]:
@@ -52,8 +56,61 @@ class ResearchWorkerRole(AgentRole):
         }
 
 
-def _build_worker_task_deepseek(title: str, description: str, output_file: str) -> str:
-    """Build worker task for the deepseek backend — uses call_claude for deep reasoning."""
+def _build_worker_task_deepseek(title: str, description: str, output_file: str,
+                                tool_names: set[str] | None = None) -> str:
+    """Build worker task for the deepseek backend — uses call_claude for deep reasoning.
+
+    tool_names: set of available tool names from the agent's tool list. The prompt
+    only mentions tools that are actually available.
+    """
+    tools = tool_names or set()
+    has_web_search = "web_search" in tools
+    has_web_fetch = "web_fetch" in tools
+    has_download_file = "download_file" in tools
+    has_call_claude = "call_claude" in tools
+    has_run_command = "run_command" in tools
+
+    # Build tool-specific instruction block
+    search_instructions = []
+    if has_web_search:
+        search_instructions.append(
+            "Use `web_search` to find recent papers, articles, and references on this sub-topic. "
+            "Run multiple searches with different query angles."
+        )
+    if has_download_file:
+        search_instructions.append(
+            "For arxiv.org and other academic URLs you find: use `download_file` to save them locally "
+            "first, then `read_file` to read the local copy. This two-step pattern bypasses network restrictions. Example:\n"
+            "   - `download_file(url=\"https://arxiv.org/abs/XXXX.XXXXX\", output_path=\"paper_01.html\")`\n"
+            "   - `read_file(path=\"paper_01.html\")`"
+        )
+    if has_web_fetch:
+        search_instructions.append(
+            "Use `web_fetch` for non-academic URLs (blog posts, documentation) that don't need domain verification."
+        )
+    if has_call_claude:
+        search_instructions.append(
+            "Use `call_claude` for deep reasoning and synthesis on specific questions. "
+            "Break the sub-topic into 2-3 specific questions and analyze each one."
+        )
+
+    tool_section = ""
+    if search_instructions:
+        numbered = [f"{i+1}. {inst}" for i, inst in enumerate(search_instructions)]
+        # Write instruction comes after search/reasoning tools
+        write_num = len(numbered) + 1
+        tool_section = "\n".join(numbered)
+        tool_section += f"\n{write_num}. Use `write_file` to save your complete findings to the file: `{output_file}`"
+        verify_num = write_num + 1
+        done_num = verify_num + 1
+    else:
+        tool_section = (
+            "1. Use `read_file` to examine any relevant local reference files.\n"
+            f"2. Use `write_file` to save your complete findings to the file: `{output_file}`"
+        )
+        verify_num = 3
+        done_num = 4
+
     return f"""You are a research agent. Conduct thorough research on the following sub-topic.
 
 ## Research Sub-Topic
@@ -61,27 +118,23 @@ def _build_worker_task_deepseek(title: str, description: str, output_file: str) 
 **Description**: {description}
 
 ## Instructions
-1. Use `web_search` to find recent papers, articles, and references on this sub-topic. Run multiple searches with different query angles.
-2. For arxiv.org and other academic URLs you find: use `download_file` to save them locally first, then `read_file` to read the local copy. This two-step pattern bypasses network restrictions. Example:
-   - `download_file(url="https://arxiv.org/abs/XXXX.XXXXX", output_path="paper_01.html")`
-   - `read_file(path="paper_01.html")`
-3. Use `web_fetch` for non-academic URLs (blog posts, documentation) that don't need domain verification.
-4. Use `call_claude` for deep reasoning and synthesis on specific questions. Break the sub-topic into 2-3 specific questions and analyze each one.
-5. Use `write_file` to save your complete findings to the file: `{output_file}`
-6. Organize your findings into sections:
+{tool_section}
+{verify_num}. Organize your findings into sections:
    - **Overview**: 2-3 paragraph summary of the sub-topic
    - **Key Methods & Approaches**: detailed findings with technical depth
    - **Important Papers & References**: key works with authors, venue, year, and brief notes
    - **Open Questions & Future Directions**: gaps and opportunities
    - **Relevance to Main Topic**: how this connects to the broader research area
-7. After writing the file, read it back to verify completeness.
-8. Output TASK_COMPLETE when done.
+{done_num}. After writing the file, read it back to verify completeness.
+{done_num + 1}. Output TASK_COMPLETE when done.
 
 Focus on depth and accuracy. Your research will be scored and ranked."""
 
 
 def _build_worker_task_claude_cli(
-    title: str, description: str, output_file: str, prefetch_files: list[str] | None = None,
+    title: str, description: str, output_file: str,
+    prefetch_files: list[str] | None = None,
+    tool_names: set[str] | None = None,
 ) -> str:
     """Build worker task for the claude_cli backend.
 
@@ -90,7 +143,11 @@ def _build_worker_task_claude_cli(
 
     prefetch_files: local file paths already downloaded by the framework. The agent
     should read these directly — no HTTP requests to arxiv.org needed.
+    tool_names: set of available tool names — prompt only mentions tools that exist.
     """
+    tools = tool_names or set()
+    has_web_search = "web_search" in tools
+
     prefetch_section = ""
     if prefetch_files:
         prefetch_section = "\n## Pre-downloaded Reference Material\n"
@@ -99,6 +156,26 @@ def _build_worker_task_claude_cli(
             prefetch_section += f"  - `{f}`\n"
         prefetch_section += "\nStart by reading these files before doing any additional searching.\n"
 
+    # Build numbered instructions that adapt to available tools
+    instructions = []
+    inst_num = 1
+    if prefetch_files:
+        instructions.append(f"{inst_num}. FIRST, use **Read** to read any pre-downloaded reference files listed above. These are already saved locally.")
+        inst_num += 1
+    if has_web_search:
+        instructions.append(f"{inst_num}. Use **WebSearch** to find additional papers, articles, and technical documentation. Run multiple searches with different query angles.")
+        inst_num += 1
+        instructions.append(f"{inst_num}. For any arxiv.org or academic URLs found in search results: do NOT try to fetch them directly (domain verification will block them). Instead, note the URLs in your findings so the framework can download them later.")
+        inst_num += 1
+    instructions.append(f"{inst_num}. Synthesize your findings using your own reasoning. Identify patterns, compare approaches, and note trade-offs.")
+    inst_num += 1
+
+    instructions.append(f"{inst_num}. Use **Write** to save your complete findings to the file: `{output_file}`\n   Organize your findings into these sections:\n   - **Overview**: 2-3 paragraph summary covering the core ideas and motivation\n   - **Key Methods & Approaches**: detailed technical explanation of how each method works, with comparisons\n   - **Important Papers & References**: list key papers with authors, venue, year, and a 1-2 sentence note on their contribution\n   - **Open Questions & Future Directions**: current limitations and active research frontiers\n   - **Relevance to Main Topic**: how this connects to broader research")
+    inst_num += 1
+    instructions.append(f"{inst_num}. After writing, use **Read** to verify the file was written correctly with all sections present.")
+    inst_num += 1
+    instructions.append(f"{inst_num}. Output TASK_COMPLETE when done.")
+
     return f"""You are a research agent. Conduct thorough research on the following sub-topic.
 
 ## Research Sub-Topic
@@ -106,19 +183,7 @@ def _build_worker_task_claude_cli(
 **Description**: {description}
 {prefetch_section}
 ## Instructions
-1. FIRST, use **Read** to read any pre-downloaded reference files listed above. These are already saved locally.
-2. Use **WebSearch** to find additional papers, articles, and technical documentation. Run multiple searches with different query angles.
-3. For any arxiv.org or academic URLs found in search results: do NOT try to fetch them directly (domain verification will block them). Instead, note the URLs in your findings so the framework can download them later.
-4. Synthesize your findings using your own reasoning. Identify patterns, compare approaches, and note trade-offs.
-5. Use **Write** to save your complete findings to the file: `{output_file}`
-   Organize your findings into these sections:
-   - **Overview**: 2-3 paragraph summary covering the core ideas and motivation
-   - **Key Methods & Approaches**: detailed technical explanation of how each method works, with comparisons
-   - **Important Papers & References**: list key papers with authors, venue, year, and a 1-2 sentence note on their contribution
-   - **Open Questions & Future Directions**: current limitations and active research frontiers
-   - **Relevance to Main Topic**: how this connects to broader research
-6. After writing, use **Read** to verify the file was written correctly with all sections present.
-7. Output TASK_COMPLETE when done.
+{chr(10).join(instructions)}
 
 Focus on technical depth, concrete details, and accuracy. Your research will be scored and ranked on depth, accuracy, relevance, clarity, and originality."""
 

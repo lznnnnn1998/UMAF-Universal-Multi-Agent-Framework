@@ -23,10 +23,85 @@ class ToolRegistry:
     """Centralized registry of all tool specifications and implementations.
 
     Provides role-specific tool sets and the TOOL_MAP for execution.
+    Supports JSON-based tool overrides via set_tool_config() so users can
+    restrict or customize which tools each agent role receives per pipeline.
     """
 
     # --- Tool implementations (same functions, accessible as class attribute) ---
     TOOL_MAP: dict[str, Callable] = {}  # populated after function definitions
+
+    # Module-level override: set by set_tool_config() before pipeline runs.
+    # Nested dict: {pipeline_name: {role_name: [tool_name_str, ...]}}
+    _tool_overrides: dict[str, dict[str, list[str]]] = {}
+
+    # Per-tool timeout overrides in seconds. Keys are tool function names.
+    # Populated from the __timeouts__ key in the tools config JSON::
+    #     {"__timeouts__": {"call_claude": 300, "web_fetch": 30}}
+    _tool_timeouts: dict[str, int] = {}
+
+    # Mapping from human-readable JSON names to ToolSpec class attributes.
+    _TOOL_NAME_MAP: dict[str, str] = {
+        "read_file": "READ_FILE",
+        "write_file": "WRITE_FILE",
+        "write_lines": "WRITE_LINES",
+        "run_command": "RUN_COMMAND",
+        "call_claude": "CALL_CLAUDE",
+        "web_search": "WEB_SEARCH",
+        "web_fetch": "WEB_FETCH",
+        "download_file": "DOWNLOAD_FILE",
+    }
+
+    @classmethod
+    def set_tool_config(cls, config: dict[str, dict[str, list[str]]]) -> None:
+        """Apply a tool configuration loaded from a JSON file.
+
+        The config dict maps pipeline names to role→tool-list dicts.
+        An optional ``__timeouts__`` key sets per-tool timeouts in seconds::
+
+            {
+                "__timeouts__": {"call_claude": 300, "web_fetch": 30},
+                "research": {
+                    "decomposer": ["read_file", "run_command"],
+                    "worker": ["read_file", "write_file", "call_claude"],
+                    "reviewer": ["read_file", "write_file"],
+                    "writer": ["read_file", "write_file", "write_lines"]
+                }
+            }
+
+        Role names are matched case-insensitively against the classmethod
+        suffixes (e.g. "worker" matches ``research_worker_tools``,
+        ``coderpp_worker_tools``, and ``writer`` matches ``writer_tools``).
+        """
+        timeout_config = config.pop("__timeouts__", None)
+        if isinstance(timeout_config, dict):
+            for tool_name, seconds in timeout_config.items():
+                if isinstance(seconds, (int, float)) and seconds > 0:
+                    cls._tool_timeouts[tool_name] = int(seconds)
+        cls._tool_overrides = dict(config)
+
+    @classmethod
+    def _apply_override(cls, pipeline: str, role: str, defaults: list) -> list:
+        """Return the override tool list for *role* in *pipeline*, or *defaults*."""
+        overrides = cls._tool_overrides
+        if not overrides:
+            return defaults
+
+        # Check pipeline-specific override first, then global
+        for key in (pipeline, "__global__"):
+            role_map = overrides.get(key, {})
+            if not role_map:
+                continue
+            # Case-insensitive role match
+            for rname, tool_names in role_map.items():
+                if rname.lower() in role.lower():
+                    specs = []
+                    for tn in tool_names:
+                        attr = cls._TOOL_NAME_MAP.get(tn)
+                        if attr:
+                            specs.append(getattr(cls, attr))
+                    return specs
+
+        return defaults
 
     # --- Individual tool specs ---
     READ_FILE = ToolSpec(
@@ -74,65 +149,105 @@ class ToolRegistry:
 
     @classmethod
     def coder_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
+        return cls._apply_override("coder", "coder", defaults)
 
     @classmethod
     def reviewer_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
+        defaults = [cls.READ_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
+        return cls._apply_override("coder", "reviewer", defaults)
 
     @classmethod
     def research_decomposer_tools(cls, backend: str = "deepseek") -> list[ToolSpec]:
+        defaults: list[ToolSpec]
         if backend == "claude_cli":
-            return [cls.READ_FILE]
-        return [cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH]
+            defaults = [cls.READ_FILE]
+        else:
+            defaults = [cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH]
+        return cls._apply_override("research", "decomposer", defaults)
 
     @classmethod
     def research_worker_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH, cls.DOWNLOAD_FILE]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH, cls.DOWNLOAD_FILE]
+        return cls._apply_override("research", "worker", defaults)
 
     @classmethod
     def research_reviewer_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.WEB_SEARCH, cls.WEB_FETCH]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WEB_SEARCH, cls.WEB_FETCH]
+        return cls._apply_override("research", "reviewer", defaults)
 
     @classmethod
     def writer_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES]
+        return cls._apply_override("research", "writer", defaults)
 
     @classmethod
     def coderpp_decomposer_tools(cls, backend: str = "deepseek") -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
+        return cls._apply_override("coderpp", "decomposer", defaults)
 
     @classmethod
     def coderpp_worker_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+        return cls._apply_override("coderpp", "worker", defaults)
 
     @classmethod
     def coderpp_reviewer_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+        return cls._apply_override("coderpp", "reviewer", defaults)
 
     @classmethod
     def organizer_tools(cls) -> list[ToolSpec]:
-        return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
+        return cls._apply_override("coderpp", "organizer", defaults)
 
     @classmethod
     def topology_analyzer_tools(cls) -> list[ToolSpec]:
         """Tools for TopologyAnalyzerRole: reads input spec, writes analysis."""
-        return [cls.READ_FILE, cls.WRITE_FILE]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE]
+        return cls._apply_override("topology", "analyzer", defaults)
 
     @classmethod
     def topology_designer_tools(cls) -> list[ToolSpec]:
         """Tools for TopologyDesignerRole: reads complexity factors, writes candidates."""
-        return [cls.READ_FILE, cls.WRITE_FILE]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE]
+        return cls._apply_override("topology", "designer", defaults)
 
     @classmethod
     def topology_evaluator_tools(cls) -> list[ToolSpec]:
         """Tools for TopologyEvaluatorRole: reads candidate topologies, writes scores."""
-        return [cls.READ_FILE, cls.WRITE_FILE]
+        defaults = [cls.READ_FILE, cls.WRITE_FILE]
+        return cls._apply_override("topology", "evaluator", defaults)
 
     @classmethod
     def topology_writer_tools(cls) -> list[ToolSpec]:
         """Tools for TopologyWriterRole: writes final spec and report files."""
-        return [cls.WRITE_FILE]
+        defaults = [cls.WRITE_FILE]
+        return cls._apply_override("topology", "writer", defaults)
+
+    @classmethod
+    def skill_scanner_tools(cls) -> list[ToolSpec]:
+        """Tools for SkillScannerRole: scans project directory."""
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
+        return cls._apply_override("skill", "scanner", defaults)
+
+    @classmethod
+    def skill_detector_tools(cls) -> list[ToolSpec]:
+        """Tools for domain detector roles: reads project_scan.json, writes report."""
+        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
+        return cls._apply_override("skill", "detector", defaults)
+
+    @classmethod
+    def skill_aggregator_tools(cls) -> list[ToolSpec]:
+        """Tools for SkillAggregatorRole: reads domain reports, deduplicates, writes inventory."""
+        defaults = [cls.READ_FILE, cls.WRITE_FILE]
+        return cls._apply_override("skill", "aggregator", defaults)
+
+    @classmethod
+    def skill_writer_tools(cls) -> list[ToolSpec]:
+        """Tools for SkillReportWriterRole: writes skills.json and skills_report.md."""
+        defaults = [cls.READ_FILE, cls.WRITE_FILE]
+        return cls._apply_override("skill", "writer", defaults)
 
     @classmethod
     def to_dicts(cls, specs: list[ToolSpec]) -> list[dict[str, Any]]:
@@ -198,7 +313,7 @@ def run_command(command: str, working_dir: str = ".") -> str:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=ToolRegistry._tool_timeouts.get("run_command", 30),
             cwd=working_dir,
         )
         output = result.stdout
@@ -206,7 +321,8 @@ def run_command(command: str, working_dir: str = ".") -> str:
             output += f"\n[stderr]:\n{result.stderr}"
         return output.strip() or "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: command timed out after 30 seconds"
+        timeout = ToolRegistry._tool_timeouts.get("run_command", 30)
+        return f"Error: command timed out after {timeout} seconds"
     except Exception as e:
         return f"Error running command: {e}"
 
@@ -223,7 +339,7 @@ def call_claude(prompt: str, working_dir: str = ".") -> str:
              "--permission-mode", "bypassPermissions"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=ToolRegistry._tool_timeouts.get("call_claude", 120),
             cwd=working_dir,
             env=merge_claude_env(),
         )
@@ -232,7 +348,8 @@ def call_claude(prompt: str, working_dir: str = ".") -> str:
             output += f"\n[stderr]:\n{result.stderr}"
         return output.strip() or "(no output)"
     except subprocess.TimeoutExpired:
-        return "Error: claude CLI timed out after 120 seconds"
+        timeout = ToolRegistry._tool_timeouts.get("call_claude", 120)
+        return f"Error: claude CLI timed out after {timeout} seconds"
     except FileNotFoundError:
         return "Error: claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
     except Exception as e:
@@ -258,7 +375,7 @@ def web_search(query: str, max_results: int = 10, working_dir: str = ".") -> str
                 "Accept": "text/html",
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=ToolRegistry._tool_timeouts.get("web_search", 15)) as resp:
             html = resp.read().decode("utf-8", errors="replace")
     except Exception as e:
         return f"Error searching web: {e}"
@@ -327,7 +444,7 @@ def web_fetch(url: str, max_chars: int = 12000, working_dir: str = ".") -> str:
                 "Accept": "text/html,application/xhtml+xml,text/plain",
             },
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=ToolRegistry._tool_timeouts.get("web_fetch", 20)) as resp:
             content_type = resp.headers.get("Content-Type", "")
             data = resp.read()
 
@@ -373,7 +490,7 @@ def download_file(url: str, output_path: str, working_dir: str = ".") -> str:
                 "Accept": "text/html,application/xhtml+xml,text/plain,application/pdf",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=ToolRegistry._tool_timeouts.get("download_file", 30)) as resp:
             data = resp.read()
             full_path.write_bytes(data)
         size_kb = len(data) / 1024

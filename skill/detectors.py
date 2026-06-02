@@ -127,11 +127,7 @@ class _BaseDetectorRole(AgentRole):
     domain: str = ""
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
-        return ToolRegistry.to_dicts([
-            ToolRegistry.READ_FILE,
-            ToolRegistry.WRITE_FILE,
-            ToolRegistry.RUN_COMMAND,
-        ])
+        return ToolRegistry.to_dicts(ToolRegistry.skill_detector_tools())
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      project_dir: str = ".", **context: Any) -> dict[str, Any]:

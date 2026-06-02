@@ -33,11 +33,7 @@ class SkillScannerRole(AgentRole):
 
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         """Provide read_file, write_file, and run_command for directory scans."""
-        return ToolRegistry.to_dicts([
-            ToolRegistry.READ_FILE,
-            ToolRegistry.WRITE_FILE,
-            ToolRegistry.RUN_COMMAND,
-        ])
+        return ToolRegistry.to_dicts(ToolRegistry.skill_scanner_tools())
 
     # ── Task prompt ─────────────────────────────────────────────────────
 
