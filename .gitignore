@@ -30,3 +30,7 @@ QAT_*.md
 coderpp_output/
 coderpp_from_research_output/
 coder_output/
+
+# Topology & skill pipeline output directories (generated at runtime)
+topology_output/
+skill_output/
