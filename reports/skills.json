@@ -1,0 +1,314 @@
+{
+  "project": "universal_multi_agent_framework",
+  "generated_at": "2026-06-02T10:30:00.000000+00:00",
+  "summary": {
+    "total_skills": 33,
+    "domains": ["Python", "Infrastructure", "Configuration & Documentation"],
+    "top_category": "Other",
+    "proficiency_levels": {
+      "expert": 2,
+      "advanced": 10,
+      "intermediate": 21,
+      "beginner": 0
+    }
+  },
+  "skills_by_category": {
+    "Languages & Runtimes": [
+      {
+        "name": "Python",
+        "proficiency": "advanced",
+        "evidence": [".python-version", "setup.py", "requirements.txt"]
+      }
+    ],
+    "Web Frameworks": [
+      {
+        "name": "Flask",
+        "proficiency": "intermediate",
+        "evidence": ["Flask==3.1.3 in requirements.txt"]
+      }
+    ],
+    "Backend": [
+      {
+        "name": "DeepSeek API",
+        "proficiency": "advanced",
+        "evidence": [
+          "ChatOpenAI configured with base_url=https://api.deepseek.com/v1",
+          "DEEPSEEK_API_KEY from .env via python-dotenv"
+        ]
+      },
+      {
+        "name": "Claude CLI",
+        "proficiency": "advanced",
+        "evidence": [
+          "ClaudeCLILLM class shells out to claude -p subprocess",
+          "merge_claude_env() injects 12 env vars from claude_env_sample.json"
+        ]
+      },
+      {
+        "name": "urllib",
+        "proficiency": "intermediate",
+        "evidence": [
+          "web_search(): DuckDuckGo Lite scraping via urllib.request",
+          "web_fetch(): URL content fetching with HTML stripping",
+          "download_file(): urllib-based download for network sandbox bypass"
+        ]
+      },
+      {
+        "name": "Requests",
+        "proficiency": "intermediate",
+        "evidence": ["requests>=2.34.2 in requirements.txt"]
+      }
+    ],
+    "Testing": [
+      {
+        "name": "pytest",
+        "proficiency": "advanced",
+        "evidence": [
+          "6 test files across the project",
+          "test_smoke.py: 15 comprehensive smoke tests",
+          "test_skill.py, test_topology.py: pipeline-specific tests"
+        ]
+      },
+      {
+        "name": "unittest",
+        "proficiency": "intermediate",
+        "evidence": [
+          "unittest.mock.patch and MagicMock in test_smoke.py"
+        ]
+      }
+    ],
+    "Code Quality": [
+      {
+        "name": "Pydantic",
+        "proficiency": "intermediate",
+        "evidence": [
+          "pydantic>=2.13.0 installed as dependency of LangChain"
+        ]
+      },
+      {
+        "name": "Python Typing (3.11+)",
+        "proficiency": "advanced",
+        "evidence": [
+          "X | None syntax instead of Optional[X]",
+          "TypedDict for all pipeline states",
+          "Literal types for flow routing"
+        ]
+      },
+      {
+        "name": "pre-commit",
+        "proficiency": "intermediate",
+        "evidence": [".pre-commit-config.yaml"]
+      }
+    ],
+    "Data Science & ML": [
+      {
+        "name": "LangChain",
+        "proficiency": "expert",
+        "evidence": [
+          "langchain>=0.3.0 in requirements.txt",
+          "langchain_core.messages imports across agent.py, llm.py",
+          "langchain_openai.ChatOpenAI in llm.py",
+          "AgentResult, BaseAgent, AgentRole built on LangChain message types"
+        ]
+      },
+      {
+        "name": "LangGraph",
+        "proficiency": "expert",
+        "evidence": [
+          "langgraph>=0.2.0 in requirements.txt",
+          "StateGraph used in all 5 pipelines",
+          "TypedDict state schemas with conditional edges"
+        ]
+      },
+      {
+        "name": "PyTorch",
+        "proficiency": "intermediate",
+        "evidence": ["torch==2.12.0 in requirements.txt"]
+      },
+      {
+        "name": "HuggingFace Transformers",
+        "proficiency": "intermediate",
+        "evidence": [
+          "transformers==5.9.0 in requirements.txt",
+          "huggingface_hub==1.17.0 in requirements.txt"
+        ]
+      },
+      {
+        "name": "NumPy",
+        "proficiency": "intermediate",
+        "evidence": ["numpy==2.4.6 in requirements.txt"]
+      },
+      {
+        "name": "NetworkX",
+        "proficiency": "intermediate",
+        "evidence": ["networkx==3.6.1 in requirements.txt"]
+      }
+    ],
+    "Build & Tooling": [
+      {
+        "name": "argparse",
+        "proficiency": "intermediate",
+        "evidence": [
+          "main.py: argparse with --mode, --backend, --working-dir, --clean, --resume, --yes"
+        ]
+      },
+      {
+        "name": "Rich",
+        "proficiency": "intermediate",
+        "evidence": ["rich>=15.0.0 in requirements.txt"]
+      },
+      {
+        "name": "Typer",
+        "proficiency": "intermediate",
+        "evidence": ["typer>=0.25.1 in requirements.txt"]
+      }
+    ],
+    "Containerization": [
+      {
+        "name": "Docker",
+        "proficiency": "advanced",
+        "evidence": ["Dockerfile", "docker-compose.yml"]
+      }
+    ],
+    "Documentation": [
+      {
+        "name": "Markdown",
+        "proficiency": "intermediate",
+        "evidence": [
+          "README.md (~5KB comprehensive)",
+          "CLAUDE.md (project instructions)",
+          "6 memory/*.md files",
+          "specs/*.md documents"
+        ]
+      }
+    ],
+    "Configuration Management": [
+      {
+        "name": "python-dotenv",
+        "proficiency": "intermediate",
+        "evidence": [
+          "python-dotenv>=1.0.0 in requirements.txt",
+          "load_dotenv() in llm.py for DEEPSEEK_API_KEY"
+        ]
+      },
+      {
+        "name": "PyYAML",
+        "proficiency": "intermediate",
+        "evidence": ["PyYAML>=6.0.3 in requirements.txt"]
+      },
+      {
+        "name": "YAML",
+        "proficiency": "intermediate",
+        "evidence": [
+          "15 YAML files detected",
+          "docker-compose.yml",
+          ".github/workflows/ci.yml"
+        ]
+      }
+    ],
+    "API Specifications": [
+      {
+        "name": "OpenAPI",
+        "proficiency": "advanced",
+        "evidence": ["openapi.yaml specification file", "OpenAPI 3.0 format"]
+      }
+    ],
+    "Other": [
+      {
+        "name": "concurrent.futures",
+        "proficiency": "advanced",
+        "evidence": [
+          "ThreadPoolExecutor for concurrent agent execution",
+          "as_completed() for non-blocking result collection"
+        ]
+      },
+      {
+        "name": "abc (Abstract Base Classes)",
+        "proficiency": "advanced",
+        "evidence": [
+          "LLMProvider ABC with abstract invoke()",
+          "AgentRole ABC with template method pattern",
+          "10+ concrete AgentRole subclasses"
+        ]
+      },
+      {
+        "name": "dataclasses",
+        "proficiency": "intermediate",
+        "evidence": [
+          "ToolSpec dataclass",
+          "AgentResult dataclass in agent.py"
+        ]
+      },
+      {
+        "name": "subprocess",
+        "proficiency": "advanced",
+        "evidence": [
+          "Claude CLI integration via subprocess.run()/Popen()",
+          "Process lifecycle management",
+          "run_command tool (30s), call_claude tool (120s)"
+        ]
+      },
+      {
+        "name": "pathlib",
+        "proficiency": "intermediate",
+        "evidence": [
+          "Path() for path resolution in tools.py",
+          "Path.parent.mkdir(parents=True, exist_ok=True) pattern"
+        ]
+      },
+      {
+        "name": "re (Regular Expressions)",
+        "proficiency": "intermediate",
+        "evidence": [
+          "HTML parsing in web_search()/web_fetch()",
+          "Tool name translation for Claude CLI",
+          "LaTeX escape handling"
+        ]
+      },
+      {
+        "name": "json",
+        "proficiency": "intermediate",
+        "evidence": [
+          "Checkpoint save/load",
+          "Agent log files",
+          "Decomposition and scoring report storage"
+        ]
+      }
+    ]
+  },
+  "all_skills": [
+    {"name": "Python", "category": "Languages & Runtimes", "proficiency": "advanced", "version": "3.11"},
+    {"name": "LangChain", "category": "Data Science & ML", "proficiency": "expert", "version": ">=1.3.0"},
+    {"name": "LangGraph", "category": "Data Science & ML", "proficiency": "expert", "version": ">=1.2.0"},
+    {"name": "DeepSeek API", "category": "Backend", "proficiency": "advanced", "version": "deepseek-chat"},
+    {"name": "Claude CLI", "category": "Backend", "proficiency": "advanced", "version": "claude (CLI)"},
+    {"name": "pytest", "category": "Testing", "proficiency": "advanced", "version": ">=9.0"},
+    {"name": "unittest", "category": "Testing", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "python-dotenv", "category": "Configuration Management", "proficiency": "intermediate", "version": ">=1.0.0"},
+    {"name": "Pydantic", "category": "Code Quality", "proficiency": "intermediate", "version": ">=2.13"},
+    {"name": "concurrent.futures", "category": "Other", "proficiency": "advanced", "version": "stdlib"},
+    {"name": "abc (Abstract Base Classes)", "category": "Other", "proficiency": "advanced", "version": "stdlib"},
+    {"name": "Python Typing (3.11+)", "category": "Code Quality", "proficiency": "advanced", "version": ">=3.11"},
+    {"name": "dataclasses", "category": "Other", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "subprocess", "category": "Other", "proficiency": "advanced", "version": "stdlib"},
+    {"name": "pathlib", "category": "Other", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "argparse", "category": "Build & Tooling", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "urllib", "category": "Backend", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "re (Regular Expressions)", "category": "Other", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "json", "category": "Other", "proficiency": "intermediate", "version": "stdlib"},
+    {"name": "Flask", "category": "Web Frameworks", "proficiency": "intermediate", "version": "3.1"},
+    {"name": "Rich", "category": "Build & Tooling", "proficiency": "intermediate", "version": ">=15.0"},
+    {"name": "Typer", "category": "Build & Tooling", "proficiency": "intermediate", "version": ">=0.25"},
+    {"name": "Requests", "category": "Backend", "proficiency": "intermediate", "version": ">=2.34"},
+    {"name": "PyYAML", "category": "Configuration Management", "proficiency": "intermediate", "version": ">=6.0"},
+    {"name": "PyTorch", "category": "Data Science & ML", "proficiency": "intermediate", "version": "2.12"},
+    {"name": "HuggingFace Transformers", "category": "Data Science & ML", "proficiency": "intermediate", "version": "5.9"},
+    {"name": "NumPy", "category": "Data Science & ML", "proficiency": "intermediate", "version": "2.4"},
+    {"name": "NetworkX", "category": "Data Science & ML", "proficiency": "intermediate", "version": "3.6"},
+    {"name": "Docker", "category": "Containerization", "proficiency": "advanced", "version": ""},
+    {"name": "YAML", "category": "Configuration Management", "proficiency": "intermediate", "version": ""},
+    {"name": "OpenAPI", "category": "API Specifications", "proficiency": "advanced", "version": "3.0"},
+    {"name": "pre-commit", "category": "Code Quality", "proficiency": "intermediate", "version": ""},
+    {"name": "Markdown", "category": "Documentation", "proficiency": "intermediate", "version": ""}
+  ]
+}

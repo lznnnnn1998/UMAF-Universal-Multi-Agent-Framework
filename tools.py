@@ -115,6 +115,26 @@ class ToolRegistry:
         return [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
 
     @classmethod
+    def topology_analyzer_tools(cls) -> list[ToolSpec]:
+        """Tools for TopologyAnalyzerRole: reads input spec, writes analysis."""
+        return [cls.READ_FILE, cls.WRITE_FILE]
+
+    @classmethod
+    def topology_designer_tools(cls) -> list[ToolSpec]:
+        """Tools for TopologyDesignerRole: reads complexity factors, writes candidates."""
+        return [cls.READ_FILE, cls.WRITE_FILE]
+
+    @classmethod
+    def topology_evaluator_tools(cls) -> list[ToolSpec]:
+        """Tools for TopologyEvaluatorRole: reads candidate topologies, writes scores."""
+        return [cls.READ_FILE, cls.WRITE_FILE]
+
+    @classmethod
+    def topology_writer_tools(cls) -> list[ToolSpec]:
+        """Tools for TopologyWriterRole: writes final spec and report files."""
+        return [cls.WRITE_FILE]
+
+    @classmethod
     def to_dicts(cls, specs: list[ToolSpec]) -> list[dict[str, Any]]:
         """Convert ToolSpec list to the dict format expected by BaseAgent."""
         return [{"name": s.name, "description": s.description, "parameters": dict(s.parameters)} for s in specs]

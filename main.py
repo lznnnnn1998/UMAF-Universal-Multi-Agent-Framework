@@ -1,12 +1,14 @@
 import argparse
 import sys
 
-from pipeline import CoderPipeline, ResearchPipeline, CoderPPPipeline
+from pipeline import CoderPipeline, ResearchPipeline, CoderPPPipeline, TopologyPipeline, SkillPipeline
 
 PIPELINES = {
     "coder": CoderPipeline,
     "research": ResearchPipeline,
     "coderpp": CoderPPPipeline,
+    "topology": TopologyPipeline,
+    "skill": SkillPipeline,
 }
 
 
