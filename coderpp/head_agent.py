@@ -92,7 +92,7 @@ class CoderPPDecomposerRole(BaseDecomposerRole):
         return (
             "- **Simple** (single script, few features): 2-3 modules\n"
             "- **Moderate** (multi-file, several features): 4-5 modules\n"
-            "- **Complex** (full app, many interacting parts): up to 6 modules"
+            "- **Complex** (full app, many interacting parts): up to 20 modules"
         )
 
     def _sub_unit_requirements(self) -> str:
@@ -157,7 +157,7 @@ def _fallback_decompose(spec: str) -> list[dict[str, Any]]:
         sections = re.findall(r'\\section\{([^}]+)\}', spec)
         if sections:
             templates: list[dict[str, Any]] = []
-            for i, sec in enumerate(sections[:5]):
+            for i, sec in enumerate(sections[:20]):
                 raw = re.sub(r'[^a-z0-9_]', '_', sec.lower())[:50]
                 safe_name = raw.strip('_') or f"module_{i+1:02d}"
                 templates.append({
@@ -167,7 +167,7 @@ def _fallback_decompose(spec: str) -> list[dict[str, Any]]:
                     "files_to_create": [f"{safe_name[:40]}.py", f"test_{safe_name[:40]}.py"],
                     "dependencies": [],
                 })
-            return templates[:6]
+            return templates[:20]
 
     # Non-LaTeX: keyword-based decomposition
     keywords = [s.strip() for s in re.split(r',| and | with |;|\n', spec) if len(s.strip()) >= 3]
@@ -175,7 +175,7 @@ def _fallback_decompose(spec: str) -> list[dict[str, Any]]:
         keywords = ["core_logic", "cli_interface", "utilities"]
 
     templates: list[dict[str, Any]] = []
-    for i, kw in enumerate(keywords[:5]):
+    for i, kw in enumerate(keywords[:20]):
         safe_name = re.sub(r'[^a-z0-9_]', '_', kw.lower().strip().rstrip('.'))[:40]
         templates.append({
             "id": i + 1,
@@ -204,7 +204,7 @@ def _fallback_decompose(spec: str) -> list[dict[str, Any]]:
             "dependencies": [],
         })
 
-    return templates[:6]
+    return templates[:20]
 
 
 def decompose_to_modules(

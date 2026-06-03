@@ -4,7 +4,7 @@
   "__comment_timeouts__": "Optional __timeouts__ key overrides per-tool timeouts in seconds. Omitted tools keep their defaults: call_claude=120, run_command=30, web_fetch=20, web_search=15, download_file=30.",
 
   "__timeouts__": {
-    "call_claude": 300,
+    "call_claude": 600,
     "web_fetch": 30
   },
 

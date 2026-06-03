@@ -900,7 +900,7 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
                     cwd=self.working_dir,
                 )
             except FileNotFoundError:
-                return "Error: claude CLI not found", False, []
+                return "Error: claude CLI not found", False, [], False
 
             messages: list = []
             final_text = ""

@@ -1006,11 +1006,11 @@ from coderpp.worker_agent import code_submodule
 from coderpp.reviewer_agent import review_module
 from coderpp.organizer import assemble_project
 
-CPP_HEAD_TIMEOUT = 120
-CPP_WORKER_TIMEOUT = 600
-CPP_REVIEWER_TIMEOUT = 600
-CPP_MAX_VERSIONS = 3
-CPP_MAX_WORKER_RETRIES = 3
+CPP_HEAD_TIMEOUT = 500
+CPP_WORKER_TIMEOUT = 1200
+CPP_REVIEWER_TIMEOUT = 1200
+CPP_MAX_VERSIONS = 5
+CPP_MAX_WORKER_RETRIES = 5
 
 
 class CoderPPState(TypedDict):

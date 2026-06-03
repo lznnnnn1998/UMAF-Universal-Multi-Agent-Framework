@@ -14,15 +14,34 @@ class CoderPPWorkerRole(AgentRole):
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.coderpp_worker_tools())
 
+    @staticmethod
+    def _is_cpp_module(sub_task: dict) -> bool:
+        """Detect whether a module produces C++ (vs Python) from files_to_create."""
+        files = sub_task.get("files_to_create", [])
+        if not files:
+            return False
+        cpp_exts = {".h", ".hpp", ".cpp", ".cxx", ".cc", ".c", ".cu"}
+        for f in files:
+            if os.path.splitext(f)[1].lower() in cpp_exts:
+                return True
+        return False
+
     def build_task(self, backend: str, sub_task: dict | None = None, **context: Any) -> str:
         assert sub_task is not None
         module_name = sub_task["module_name"]
         description = sub_task["description"]
         module_dir = f"modules/{module_name}"
+        files_to_create = sub_task.get("files_to_create", [])
         environment = context.get("environment", "")
 
+        is_cpp = self._is_cpp_module(sub_task)
+
         if backend == "claude_cli":
+            if is_cpp:
+                return _build_worker_task_cpp_claude_cli(module_name, description, module_dir, files_to_create, environment)
             return _build_worker_task_claude_cli(module_name, description, module_dir, environment)
+        if is_cpp:
+            return _build_worker_task_cpp_deepseek(module_name, description, module_dir, files_to_create, environment)
         return _build_worker_task_deepseek(module_name, description, module_dir, environment)
 
     def parse_result(self, result: AgentResult, working_dir: str,
@@ -45,12 +64,17 @@ class CoderPPWorkerRole(AgentRole):
         created_files: list[str] = []
         log_file = ""
         if os.path.isdir(module_path):
-            for f in sorted(os.listdir(module_path)):
-                full = os.path.join(module_dir, f)
-                if os.path.isfile(os.path.join(working_dir, full)):
-                    created_files.append(full)
-                    if f.endswith("log.md"):
-                        log_file = full
+            for root, dirs, files in sorted(os.walk(module_path)):
+                dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__" and d != "build")
+                rel_root = os.path.relpath(root, working_dir)
+                for f in sorted(files):
+                    if f.startswith("."):
+                        continue
+                    full = os.path.join(rel_root, f)
+                    if os.path.isfile(os.path.join(working_dir, full)):
+                        created_files.append(full)
+                        if f.endswith("log.md"):
+                            log_file = full
 
         summary = ""
         for msg in reversed(result.messages):
@@ -158,6 +182,112 @@ If you have cross-module dependencies, test files should add `modules/` to sys.p
 6. Output TASK_COMPLETE when done.
 
 Focus on clean, working code. The module must be independently testable. Use your own reasoning for design decisions — do NOT spawn nested claude -p calls."""
+
+
+def _build_worker_task_cpp_claude_cli(
+    title: str, description: str, module_dir: str,
+    files_to_create: list[str], environment: str = "",
+) -> str:
+    env_section = ""
+    if environment:
+        env_section = f"""## Project Environment
+{environment}
+
+"""
+    file_list = "\n".join(f"  - {f}" for f in files_to_create)
+    return f"""You are a C++ software engineer. Implement the following module with complete, working C++ code.
+
+{env_section}## Module
+**Name**: {title}
+**Description**: {description}
+
+## Files to Create
+{file_list}
+
+## Output Directory
+All file paths are RELATIVE to the working directory. The working directory name MUST NOT appear in any path or command you write.
+- `Write`: paths resolve relative to working directory automatically (e.g., `{module_dir}/include/foo.h`).
+- `Bash`: commands ALREADY run inside the working directory. NEVER `cd <working_dir>` — you are already there.
+
+## CRITICAL: Algorithm TODO Policy
+This is an ARCHITECTURE-ONLY implementation. You MUST:
+1. Write complete C++ interfaces, abstract base classes, data structures, and boilerplate
+2. For ANY algorithmic logic (imaging, detection, feature extraction, refocus, etc.), write ONLY:
+   - A clear function signature with proper parameter types
+   - A `// TODO: Implement <algorithm name>` comment in the function body
+   - A brief comment describing inputs, outputs, and expected behavior
+   - Return a sensible default/empty value so the code compiles
+3. Example:
+   ```cpp
+   // TODO: Implement SAR range-doppler focusing algorithm
+   // Input: raw_echo - parsed echo data frames
+   // Output: focused_sar_image - single-look complex image
+   // Expected behavior: apply range compression, RCMC, azimuth compression
+   SARImage performFocusing(const ParsedEchoData& raw_echo) {{
+       SARImage result;
+       // Placeholder: return empty image with correct dimensions
+       return result;
+   }}
+   ```
+
+## Instructions
+1. Write ALL files listed above. Header files (.h/.hpp) go in include/ subdirs, source files (.cpp) go in src/ subdirs, test files go in tests/ subdirs.
+2. Use modern C++17 with namespace sapp::<module>.
+3. Write a `CMakeLists.txt` in `{module_dir}/` that builds a static library for this module.
+4. Write Google Test unit tests that verify:
+   - Data structures can be constructed correctly
+   - Interfaces compile and virtual methods can be called
+   - TODO placeholders return expected default values
+   - Factory functions create valid objects
+5. Use `Bash` to verify compilation: `cmake -B build -G Ninja && cmake --build build` (from the module directory). Fix any compilation errors.
+6. Write a `log.md` file in `{module_dir}/` documenting implementation summary, design decisions, known issues, build instructions.
+7. After writing all files, use `Read` to verify correctness.
+8. Output TASK_COMPLETE when done.
+
+Focus on clean, compilable C++ interfaces. No algorithm logic — only architecture and TODO stubs."""
+
+
+def _build_worker_task_cpp_deepseek(
+    title: str, description: str, module_dir: str,
+    files_to_create: list[str], environment: str = "",
+) -> str:
+    env_section = ""
+    if environment:
+        env_section = f"""## Project Environment
+{environment}
+
+"""
+    file_list = "\n".join(f"  - {f}" for f in files_to_create)
+    return f"""You are a C++ software engineer. Implement the following module with complete, working C++ code.
+
+{env_section}## Module
+**Name**: {title}
+**Description**: {description}
+
+## Files to Create
+{file_list}
+
+## Output Directory
+All file paths are RELATIVE to the working directory. The working directory name MUST NOT appear in any path or command you write.
+- `write_file` / `write_lines`: paths resolve relative to working directory automatically (e.g., `{module_dir}/include/foo.h`).
+- `run_command`: commands ALREADY run inside the working directory. NEVER `cd <working_dir>` — you are already there.
+
+## CRITICAL: Algorithm TODO Policy
+This is an ARCHITECTURE-ONLY implementation. You MUST:
+1. Write complete C++ interfaces, abstract base classes, data structures, and boilerplate
+2. For ANY algorithmic logic, write ONLY a function signature with a `// TODO: Implement <name>` comment
+3. Return sensible default values so code compiles
+
+## Instructions
+1. Write ALL files listed above. Use `write_lines` for code files.
+2. Use modern C++17 with namespace sapp::<module>.
+3. Write a `CMakeLists.txt` in `{module_dir}/`.
+4. Write Google Test unit tests for data structures and interfaces.
+5. Use `run_command` to verify compilation. Fix any errors.
+6. Write a `log.md` file in `{module_dir}/`.
+7. Output TASK_COMPLETE when done.
+
+Focus on clean, compilable C++ interfaces. No algorithm logic — only architecture and TODO stubs."""
 
 
 def code_submodule(
