@@ -1,97 +1,164 @@
 ---
 name: version-diffs
-description: "Complete changelog: v1.0→v1.1 (12 bug fixes), v1.2 (backend-aware agents), v1.3 (Python 3.11), v1.3.1 (worker output fix, arxiv access)"
+description: "Complete changelog: v1.0→v1.1 (12 bug fixes), v1.2 (backend-aware), v1.3 (Python 3.11), v1.4 (OOP+pipeline), v1.4.1 (8 bug fixes), v1.5 (Topology+Skill), v1.6 (Feature+modular)"
 metadata: 
   node_type: memory
   type: project
-  originSessionId: db564f0a-1b8e-4bed-8a26-28d0132d0605
+  originSessionId: 9c942f95-5fb5-4276-8e53-c16059ca5e31
 ---
 
-## v1.4 (June 2026) — Pipeline Robustness & Dependency Management
+## v1.6 (June 2026) — Feature Pipeline + Modular Package Structure
 
-**Why:** The research pipeline's dependency graph was decorative — workers ran in dependency order but failures didn't propagate to downstream tasks, and retries started from scratch with no memory of prior attempts. A three-layer bug masked this: (1) same-version retry had no checkpoint to load, (2) topological levels didn't stop on failure, (3) `parse_result` always reported success.
+**Why:** Flat files were growing unwieldy (pipeline.py: 2,334 lines, tools.py+tools_integration.py: 1,101 lines). Needed a pipeline for adding/editing code in existing projects (not just generating new modules).
 
-### Dependency management
-- **Stop-on-failure in `_run_workers_with_deps`**: After each topological level, if any task failed and more levels remain, break out of the loop. Downstream tasks that depend on failed outputs are deferred for retry.
-- **Honest `parse_result`**: `ResearchWorkerRole.parse_result()` now checks `os.path.isfile()` before reporting `output_file` — empty/missing files correctly count as failure, triggering stop-on-failure.
-- **Worker retry state machine**: New `worker_retry` status in research flow dict creates a dedicated retry loop: failed workers only, version-bumped, with max retry limits.
+### Feature Pipeline
+- 5-node graph: scanner → planner → coder ↔ reviewer (max 5 cycles) → writer
+- 5 AgentRoles in `feature/`: `FeatureScannerRole`, `FeaturePlannerRole`, `FeatureCoderRole`, `FeatureReviewerRole`, `FeatureReportWriterRole`
+- First pipeline supporting both `files_to_create` AND `files_to_modify`
+- REVIEW_PASSED/REVIEW_FAILED token scanning pattern (reused from CoderPipeline)
+- `FeatureState` TypedDict (12 fields), `FeaturePipeline(BasePipeline)` in pipeline/feature.py
+- 5 new ToolRegistry classmethods in `tools/feature_tools.py`, auto-applied at import time
 
-### Context-reusing retries
-- **Version-bump retry**: Removed `retry_failures=True` from `_run_workers_with_deps`; retries now go through the version-bump path (`worker_retry` → `workers` with `version+1`), which triggers `BaseAgent(version=N)` → `CheckpointManager.load_previous(N)` → restore messages + reset iterations + inject retry context.
-- **Agent checkpoint injection** (`agent.py:489`): When `version > 1`, loads previous checkpoint, restores full message history, resets `iterations=0`, and appends a `[System: This is version N retry...]` message so the agent knows what failed and why.
-
-### Constants
-- `WORKER_TIMEOUT`: 300 → 600s (complex attention mechanism derivations need more time)
-- `RESEARCH_MAX_VERSIONS`: 4 (allows up to 3 retries)
-- `RESEARCH_MAX_WORKER_RETRIES`: 3
-
-### Cleanup
-- **`graph.py` removed**: Dead code, replaced by `pipeline.py` (BasePipeline + CoderPipeline + ResearchPipeline + CoderPPPipeline)
-- **`.gitignore` updated**: Added `**/agent_log/`, `*output*/*.json`, `*output*/**/*.json`, coderpp pipeline output directories
+### Modular Package Structure
+- **`pipeline.py` → `pipeline/`** (7 modules): base (550 lines), coder (168), research (464), coderpp (708), topology (179), skill (278), feature (210). All 5 concrete pipelines + base. Backward compatible via `__init__.py` re-exports.
+- **`tools.py` + `tools_integration.py` → `tools/`** (3 modules): registry.py (ToolSpec + ToolRegistry), functions.py (7 implementations), feature_tools.py (5 feature role methods). `__init__.py` auto-applies feature patches at import time.
+- **`feature_pipeline.py` → `feature/`** (5 role files + `__init__.py`): functional modules contain only agent role definitions.
+- **Test files → `test/`** directory: test_smoke.py, test_topology.py, test_skill.py, test_feature_v2.py (55 tests)
+- **`utils.py`**: shared helpers — `extract_json_object()`, `safe_read()`
+- **`main.py`**: 6 modes (added --mode feature)
 
 ### Verified
-7/7 workers produce output; scores 48, 47, 45, 44, 43, 39, 38 out of 50; 60KB LaTeX (11 sections, 17 equations, 13 tables, 47 refs); 443s pipeline time.
+- All 6 pipelines pass end-to-end with claude_cli backend:
+  - Coder: fibonacci function, 2 iterations, review passed
+  - Topology: 3-agent RAG pipeline, 37/50
+  - Skill: 21 skills detected (Python + Infra)
+  - Feature: palindrome.py + tests, 1 iteration, review passed
+  - Research: 7/7 workers, scores 40-46/50, LaTeX generated
+  - CoderPP: 2/2 workers, 2/2 reviewed, project assembled
+- All 6 pipelines pass with deepseek backend
+- 97 tests pass (42 legacy + 55 feature)
+
+---
+## v1.5 (June 2026) — Topology Optimizer + Skill Summarizer Pipelines
+
+**Why:** Extend UMAF from 3 pipelines to 5 by building two new pipelines via meta-programming (CoderPP generates both).
+
+### New pipelines
+
+**Topology Optimizer** (`--mode topology`): Given a task description, determines the optimal multi-agent topology.
+- 4-node linear graph: analyzer → designer → evaluator → writer
+- 4 AgentRole subclasses in `topology/`: `TopologyAnalyzerRole`, `TopologyDesignerRole`, `TopologyEvaluatorRole`, `TopologyWriterRole`
+- Analyzer assesses 6 complexity factors; Designer proposes 2-4 candidate topologies using 4 patterns (sequential, fan_out_fan_in, debate_consensus, hierarchical)
+- Evaluator scores on 5 dimensions (latency, reliability, cost_efficiency, simplicity, scalability) each 1-10
+- Writer produces `topology_spec.json` + `topology_report.md`
+- `TopologyState` TypedDict, `TopologyPipeline(BasePipeline)` in pipeline.py
+
+**Skill Summarizer** (`--mode skill`): Scans a project directory, extracts structured skill inventory.
+- 4-node fan-out/fan-in graph: scanner → 4 parallel detectors → aggregator → writer
+- 7 AgentRole subclasses in `skill/`: `SkillScannerRole`, `PythonDetectorRole`, `JSDetectorRole`, `InfraDetectorRole`, `ConfigDocsDetectorRole`, `SkillAggregatorRole`, `SkillReportWriterRole`
+- Domain-parallel detection: Python, JavaScript, Infra, ConfigDocs each handled by specialized detector
+- Aggregator deduplicates and categorizes skills; Writer produces `skills.json` + `skills_report.md`
+- `SkillState` TypedDict, `SkillPipeline(BasePipeline)` in pipeline.py
+
+### ToolRegistry additions
+- 4 new classmethods: `topology_analyzer_tools()`, `topology_designer_tools()`, `topology_evaluator_tools()`, `topology_writer_tools()`
+- 5 entry points in main.py: coder, research, coderpp, topology, skill
+
+### Meta-programming approach
+- CoderPP generated both pipelines from `.md` spec files (extended `_decompose()` to read `.md` in addition to `.tex`)
+- Topology Optimizer validated by designing the Skill Summarizer topology (fan-out/fan-in with domain-specific detectors — an excellent design)
+- Skill Summarizer verified on this repo: 33 skills across 11 categories
+
+### Code
+- `topology/`: 5 files, ~1200 lines (analyzer, designer, evaluator, writer, __init__)
+- `skill/`: 5 files, ~2400 lines (scanner, detectors, aggregator, writer, __init__)
+- `pipeline.py`: 2108 lines (+457 in v1.5)
+- `tools.py`: +4 ToolRegistry methods
+
+### Verified
+- Topology Optimizer end-to-end with claude_cli: `topology_spec.json` (20KB), `topology_report.md` (16KB)
+- Skill Summarizer end-to-end with claude_cli: `skills.json` (11KB), `skills_report.md` (10KB), 33 skills detected
+- 42 smoke tests pass (15 core + 14 topology + 13 skill)
+- Fallback chain verified: all agent roles have deterministic fallback methods
+
+---
+
+## v1.4.1 (June 2026) — 8 Bug Fixes
+
+**Why:** Smoke tests revealed edge cases in agent loop, checkpointing, and error handling.
+
+### Changes
+| # | Area | Fix |
+|---|------|-----|
+| 1 | Agent loop | Tool calls executed BEFORE TASK_COMPLETE check (responses with both write+tools now work) |
+| 2 | Force wrap-up | Stronger: final steps forbid all tools except write_file |
+| 3 | Post-loop | Exhaustion message explicitly requires writing file immediately |
+| 4 | CheckpointManager | Fixed version bump context injection |
+| 5 | Error spiral | 3→2 consecutive errors threshold tightened |
+| 6 | Unknown tools | Warning dedup per agent session |
+| 7 | Mid-loop | Write reminder at ~2/3 of max steps if write_file not yet called |
+| 8 | Smoke tests | 15 smoke tests added for agent/pipeline core |
+
+### Verified
+15/15 smoke tests pass; agent loop handles edge cases robustly.
+
+---
+
+## v1.4 (June 2026) — OOP Refactoring + Pipeline Robustness
+
+**Why:** Procedural code with duplicated tool definitions across 8+ files; research pipeline needed dependency management.
+
+### OOP Architecture
+- 5-layer class hierarchy: Data types → Infrastructure → Agent core → Concrete roles → Pipeline classes
+- `AgentRole` ABC with template method: `tools_for_backend()`, `build_task()`, `parse_result()`, `execute()`
+- `ToolRegistry` centralization: no duplicated tool definitions (was 8+ copies)
+- 3 dead `graph.py` files removed (replaced by `pipeline.py`)
+- `AgentResult` dataclass, `ToolSpec` dataclass, `LLMProvider` ABC
+
+### Pipeline Robustness
+- **Stop-on-failure**: `_run_workers_with_deps` breaks out of topological level loop on failure, blocks downstream
+- **Version-bump retry**: Failed workers retry with `version+1` → `CheckpointManager.load_previous(version)` restores messages
+- **Honest `parse_result`**: `ResearchWorkerRole.parse_result()` checks `os.path.isfile()` before reporting success
+- **Worker retry state machine**: `worker_retry` status, max 3 retries, max 4 versions
+- **Timeout**: Worker timeout 300s → 600s
+
+### CoderPP Pipeline
+- Multi-file code generation: organizer → workers → reviewer
+- 4 new roles: `CoderPPDecomposerRole`, `CoderPPWorkerRole`, `CoderPPReviewerRole`, `OrganizerRole`
+
+### Verified
+7/7 workers (100%); scores 48, 47, 45, 44, 43, 39, 38/50; 60KB LaTeX; 443s pipeline time.
 
 ---
 
 ## v1.3.1 (May 2026) — Worker Output Fix & arxiv.org Access
 
-**Why:** 2/4 workers produced no output files because the agent loop checked TASK_COMPLETE before executing tool calls. `claude -p` subprocesses couldn't access arxiv.org due to cc-switch domain verification.
+**Why:** Workers produced TASK_COMPLETE with write_file calls that were never executed.
 
-### Critical bug fix
-- **Tool-before-completion ordering**: Agent loop now executes tool calls BEFORE checking TASK_COMPLETE. Previously, responses containing both `write_file` + `TASK_COMPLETE` would break immediately, losing the file write entirely.
-
-### Worker output reliability
-- Mid-loop write reminder at ~2/3 of max steps if `write_file` hasn't been called yet
-- Force wrap-up messages now explicitly forbid all tools except `write_file`
-- Post-loop exhaustion message explicitly requires calling `write_file` (not just summarizing)
-
-### arxiv.org access
-- **`download_file` tool**: Framework-level urllib download → local file → `read_file` pattern bypasses cc-switch
-- **Pre-fetch layer**: `claude_cli` workers get arxiv.org content pre-downloaded at framework level before agent runs
-- Both backends now use download-then-read-local pattern for academic sites
-
-### Defaults & organization
-- Default working dir: `tempfile.mkdtemp()` → `research_output/` inside repo
-- All logs and intermediate files under `research_output/agent_log/` (renamed from `agent_logs`)
-- Removed `import tempfile` from main.py
+### Changes
+- Reordered agent loop: execute tool calls BEFORE checking TASK_COMPLETE
+- Mid-loop write reminder at ~2/3 of max steps
+- Stronger force wrap-up: forbid all tools except write_file
+- `download_file` tool: framework-level urllib download → local file
+- Pre-fetch layer: arxiv.org content pre-downloaded for claude_cli workers
+- Default working dir: `tempfile.mkdtemp()` → `research_output/` in repo
 
 ### Verified
-4/4 workers produce files (up from 2/4); all 4 real scores (up from 2 real + 2 missing); top score 47/50.
+4/4 workers produce files (up from 2/4); scores 47, 46, 43, 41/50.
 
 ---
 
 ## v1.3 (May 2026) — Python 3.11 & Code Quality
 
-**Why:** Python 3.9 patterns were deprecated; `_latex_escape()` had a latent bug (backslash → tab); several files had prototype-era dead code.
+**Why:** Python 3.9 patterns deprecated; `_latex_escape()` had latent bug.
 
-### Environment
-- Python 3.9 → 3.11 minimum; `.python-version` added
-
-### Bug fix
-- `_latex_escape()`: `"\\textbackslash "` (produced tab) → `r"\textbackslash "` (raw string). Extracted `_LATEX_ESCAPE_MAP`.
-
-### Dead code removed
-- `agent.py`: unused `_TOOL_NAME_TRANSLATION` dict (duplicate of `_TOOL_NAMES_TO_TRANSLATE`), `_build_system_prompt` dispatcher
-
-### Dynamic decomposition
-- Head agent now scales sub-topic count 2-8 based on topic complexity instead of fixed 5-7
-- Prompt teaches LLM to assess difficulty: narrow→2-3, moderate→4-5, broad→6-8
-- Fallback scales by keyword count instead of always padding to 5+
-
-### Simplifications
-- `_run_with_claude_cli`: extracted `_invoke`/`_build_prompt` helpers, DRY retry path (~20 lines)
-- `decompose_topic()`: common prompt factored out, JSON template as plain string (~20 lines)
-- Research `_router()`: if-chain → `flow` dict (~15 lines)
-
-### New tool: `web_fetch` (urllib-based)
-- Added `web_fetch(url, max_chars)` to `tools.py` — fetches URLs via Python urllib, bypassing Claude Code permission system
-- Registered in all tool sets (coder, reviewer, worker, research reviewer)
-- Worker prompts updated: use `web_fetch` for arxiv.org abstracts instead of `Bash(curl ...)`
-- arxiv.org and academic sites now always accessible without permission prompts
-
-### Types
-- 4 `Optional[X]` → `X | None` across `agent.py` and `claude_config.py`
+### Changes
+- Python >= 3.11: `Optional[X]` → `X | None`; `.python-version` set to 3.11
+- Bug fix: `_latex_escape()` backslash → tab (raw string fix)
+- Dynamic decomposition: sub-topic count 2-8 based on complexity (was fixed 5-7)
+- New tool: `web_fetch` (urllib-based, bypasses Claude Code permissions)
+- Dead code removed: `_TOOL_NAME_TRANSLATION`, `_build_system_prompt`
+- Simplifications: retry path, head_agent prompt, research router
 
 ### Verified
 8 unit tests pass; end-to-end coder pipeline verified.
@@ -100,23 +167,16 @@ metadata:
 
 ## v1.2 (May 2026) — Backend-Aware Agents
 
-**Why:** Workers used nested `claude -p` calls (agent IS already Claude Code), causing recursive invocations and timeouts. Global `Bash(*)/Write(*)/Edit(*)` permissions were too broad. `claude_env_sample.json` with real keys tracked in git.
+**Why:** Workers used nested `claude -p` calls causing recursive invocations and timeouts.
 
 ### Changes
-| Area | Change |
-|------|--------|
-| Worker tasks | Backend-aware: `claude_cli` workers use WebSearch+Write+Read directly; `deepseek` workers use `call_claude` |
-| Head agent | `claude_cli` gets Read-only tools (pure reasoning, ~70s vs 120s+) |
-| Permissions | Scoped Bash/Read/Write/Edit to project directory in `.claude/settings.local.json` |
-| Security | `claude_env_sample.json` → `.example.json` template; `.gitignore` updated |
-| Timeout | `ClaudeCLILLM` 120s → 300s |
-| Parallelism | Worker concurrency 4 → 2 |
-| Logging | `agent_logs/<name>_<timestamp>.json` via `agent_name` param |
-| `--allowedTools` | Always passed (fixes empty-tools = all-tools bug) |
-| System prompt | Removed "Use Bash for anything"; `call_claude` discourages nesting |
+- Backend-aware worker tasks: claude_cli workers use native tools; deepseek workers use `call_claude`
+- Head agent Read-only for claude_cli; scoped permissions; conversation logger
+- Security: `claude_env_sample.json` → `.example.json` template
+- Timeout 120s→300s, parallelism 4→2, `--allowedTools` always passed
 
 ### Verified
-4/6 workers produce 21-26KB files; top score 43/50; 41KB LaTeX; 2/6 hit 300s timeout.
+4/6 workers (21-26KB each); top score 43/50; 41KB LaTeX.
 
 ---
 
@@ -125,20 +185,20 @@ metadata:
 ### Critical
 | # | Issue | Fix |
 |---|-------|-----|
-| 1 | Retry used untranslated task → workers fail tools on retry | `task` → `translated_task` |
-| +1 | `claude -p` wrote files to project root instead of working dir | `cwd=working_dir` in subprocess.run |
+| 1 | Retry used untranslated task → workers fail tools | `task` → `translated_task` |
+| +1 | `claude -p` wrote to project root | `cwd=working_dir` in subprocess.run |
 
 ### High
 | # | Issue | Fix |
 |---|-------|-----|
-| 2 | `"error"` substring in research content caused false retries | Check `"error:"` prefix, `"[stderr]"`, `"timed out"` |
+| 2 | `"error"` substring caused false retries | Check `"error:"`, `"[stderr]"`, `"timed out"` |
 | 3 | Sequential workers → 35min worst-case | ThreadPoolExecutor, max 4 concurrent |
-| 4 | Daemon threads orphaned `claude -p` processes on timeout | ThreadPoolExecutor with subprocess.run timeout |
+| 4 | Daemon threads orphaned processes on timeout | ThreadPoolExecutor with subprocess.run timeout |
 
 ### Medium
 | # | Issue | Fix |
 |---|-------|-----|
-| 5 | Tool name translation missed "using", "via", "call X with" | `\b` word-boundary regex |
+| 5 | Tool name translation missed patterns | `\b` word-boundary regex |
 | 6 | Stale `review_passed=True` skipped reviewer | Coder resets `review_passed=False` |
 | 7 | Fallback decomposition always 5 generic titles | Keyword extraction, pad to ≥5 |
 
@@ -147,16 +207,16 @@ metadata:
 |---|-------|-----|
 | 8 | "Only 0 step(s) remaining" | Special-case: "This is your LAST step" |
 | 9 | Regex couldn't parse nested JSON args | Brace-counting extraction |
-| 10 | Greedy regex matched across JSON arrays | Non-greedy `[\s\S]*?` |
-| 11 | Only `&`/`%` escaped in LaTeX | All 10 special chars in `_latex_escape()` |
+| 10 | Greedy regex matched across arrays | Non-greedy `[\s\S]*?` |
+| 11 | Only `&`/`%` escaped in LaTeX | All 10 special chars |
 
 ### Before/After (v1.0→v1.1)
 | Metric | Before | After |
 |--------|--------|-------|
 | Worker completion | 3/7 (43%) | 5/5 (100%) |
 | Top score | 25/50 (auto-rank) | 46/50 (real) |
-| Pipeline time | 35min (sequential) | 9min (parallel 4×) |
+| Pipeline time | 35min (sequential) | 9min (parallel) |
 | Research files | 0 | 40KB + JSON |
 
 ### Related
-[[architecture_progress]], [[key_updates]]
+[[architecture_progress]], [[key_updates]], [[oop_refactoring]]

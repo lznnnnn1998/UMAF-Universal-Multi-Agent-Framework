@@ -1,0 +1,27 @@
+"""UMAF Pipeline — abstract base and concrete pipeline implementations.
+
+Provides BasePipeline and all five pipeline classes:
+- CoderPipeline (coder ↔ reviewer loop)
+- ResearchPipeline (head → workers → reviewer → writer)
+- CoderPPPipeline (head → workers → reviewer → organizer)
+- TopologyPipeline (analyzer → designer → evaluator → writer)
+- SkillPipeline (scanner → 4 detectors → aggregator → writer)
+"""
+
+from .base import BasePipeline
+from .coder import CoderPipeline, CoderRole, ReviewerRole, MultiAgentState
+from .research import ResearchPipeline, ResearchState
+from .coderpp import CoderPPPipeline, CoderPPState
+from .topology import TopologyPipeline, TopologyState
+from .skill import SkillPipeline, SkillState
+from .feature import FeaturePipeline, FeatureState
+
+__all__ = [
+    "BasePipeline",
+    "CoderPipeline", "CoderRole", "ReviewerRole", "MultiAgentState",
+    "ResearchPipeline", "ResearchState",
+    "CoderPPPipeline", "CoderPPState",
+    "TopologyPipeline", "TopologyState",
+    "SkillPipeline", "SkillState",
+    "FeaturePipeline", "FeatureState",
+]

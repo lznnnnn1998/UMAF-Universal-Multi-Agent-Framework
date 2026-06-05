@@ -9,7 +9,7 @@ build/
 .DS_Store
 .claude/
 claude_env_sample.json
-
+**examples**
 
 # Research pipeline output files (generated at runtime)
 research_output/

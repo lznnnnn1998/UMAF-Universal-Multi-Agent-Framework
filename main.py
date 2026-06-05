@@ -3,7 +3,8 @@ import json
 import sys
 from pathlib import Path
 
-from pipeline import CoderPipeline, ResearchPipeline, CoderPPPipeline, TopologyPipeline, SkillPipeline
+from pipeline import (CoderPipeline, ResearchPipeline, CoderPPPipeline,
+                       TopologyPipeline, SkillPipeline, FeaturePipeline)
 from tools import ToolRegistry
 
 PIPELINES = {
@@ -12,6 +13,7 @@ PIPELINES = {
     "coderpp": CoderPPPipeline,
     "topology": TopologyPipeline,
     "skill": SkillPipeline,
+    "feature": FeaturePipeline,
 }
 
 
@@ -77,7 +79,7 @@ def main():
     requirement = args.requirement
     if not requirement:
         if sys.stdin.isatty():
-            prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement"}
+            prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement", "feature": "Enter feature description"}
             requirement = input(f"{prompt_map.get(args.mode, 'Enter requirement')}: ").strip()
         else:
             requirement = sys.stdin.read().strip()

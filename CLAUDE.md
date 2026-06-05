@@ -1,31 +1,37 @@
-# Universal Multi-Agent Framework (UMAF) v1.5
+# Universal Multi-Agent Framework (UMAF) v1.6
 
-LangChain + DeepSeek multi-agent framework with five pipelines and two backends. OOP architecture with 5-layer class hierarchy.
+LangChain + DeepSeek multi-agent framework with six pipelines and two backends. OOP architecture with 5-layer class hierarchy.
 
 ## Architecture
 
 ```
-main.py → pipeline.py → agent.py → llm.py        (all pipelines)
-              │               │          ├── ChatOpenAI (deepseek-chat)
-              ▼               ▼          └── ClaudeCLILLM (subprocess)
-        BasePipeline    AgentRole ABC
-        ├── CoderPipeline     ├── CoderRole
-        ├── ResearchPipeline  ├── ResearchWorkerRole
-        ├── CoderPPPipeline   ├── ResearchDecomposerRole
-        ├── TopologyPipeline  ├── ResearchReviewerRole
-        └── SkillPipeline     ├── WriterRole
-                              ├── TopologyAnalyzerRole
-                              ├── TopologyDesignerRole
-                              ├── TopologyEvaluatorRole
-                              ├── TopologyWriterRole
-                              ├── SkillScannerRole
-                              ├── PythonDetectorRole
-                              ├── JSDetectorRole
-                              ├── InfraDetectorRole
-                              ├── ConfigDocsDetectorRole
-                              ├── SkillAggregatorRole
-                              └── SkillReportWriterRole
-                              (18 roles total)
+main.py → pipeline/       → agent.py → llm.py        (all pipelines)
+               │                │          ├── ChatOpenAI (deepseek-chat)
+               ▼                ▼          └── ClaudeCLILLM (subprocess)
+        BasePipeline      AgentRole ABC
+        ├── CoderPipeline       ├── CoderRole
+        ├── ResearchPipeline    ├── ReviewerRole
+        ├── CoderPPPipeline     ├── ResearchWorkerRole
+        ├── TopologyPipeline    ├── ResearchDecomposerRole
+        ├── SkillPipeline       ├── ResearchReviewerRole
+        └── FeaturePipeline     ├── WriterRole
+                                ├── FeatureScannerRole
+                                ├── FeaturePlannerRole
+                                ├── FeatureCoderRole
+                                ├── FeatureReviewerRole
+                                ├── FeatureReportWriterRole
+                                ├── TopologyAnalyzerRole
+                                ├── TopologyDesignerRole
+                                ├── TopologyEvaluatorRole
+                                ├── TopologyWriterRole
+                                ├── SkillScannerRole
+                                ├── PythonDetectorRole
+                                ├── JSDetectorRole
+                                ├── InfraDetectorRole
+                                ├── ConfigDocsDetectorRole
+                                ├── SkillAggregatorRole
+                                └── SkillReportWriterRole
+                                (23 roles total)
 ```
 
 ## Modules
@@ -36,8 +42,8 @@ main.py → pipeline.py → agent.py → llm.py        (all pipelines)
 
 Factory: `get_llm(backend)`.
 
-### `tools.py` — Seven tools + ToolRegistry
-`read_file`, `write_file`, `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). `ToolRegistry` class centralizes tool specs with 16+ role-specific methods — no duplicated tool definitions.
+### `tools/` — Seven tools + ToolRegistry
+`read_file`, `write_file`, `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 18+ role-specific methods), `functions.py` (7 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods). `__init__.py` re-exports and auto-applies feature tools — no duplicated tool definitions.
 
 ### `agent.py` — Agent core
 - **`BaseAgent`**: Autonomous agent loop with circuit breakers (force wrap-up, error spiral detection, unknown tool warnings).
@@ -46,7 +52,7 @@ Factory: `get_llm(backend)`.
 - **Conversation logger**: `_save_agent_log()` writes to `agent_log/<name>_<timestamp>.json`.
 - **Pre-fetch layer**: For `claude_cli` workers, arxiv.org content is pre-downloaded at the framework level (via `download_file`) before the agent runs, avoiding Claude Code's cc-switch domain verification.
 
-### `pipeline.py` — Five pipelines
+### `pipeline/` — Six pipelines
 **`BasePipeline`**: Output dir management, double-check confirmation, `_topological_levels()`, `_run_workers_with_deps()`, `_run_parallel_agents()`.
 
 **`CoderPipeline`**: Coder (all 6 tools) → Reviewer (no write_file). Max 5 cycles. Coder resets `review_passed=False` each run.
@@ -82,19 +88,34 @@ scanner → 4 parallel detectors → aggregator → writer → END
 - **aggregator.py**: `SkillAggregatorRole` — reads domain report files, deduplicates, categorizes skills
 - **writer.py**: `SkillReportWriterRole` — produces `skills.json` (project, skills_by_category, all_skills) and `skills_report.md`
 
+**`FeaturePipeline`** (v1.6):
+```
+scanner → planner → coder ↔ reviewer (max 5 cycles) → writer → END
+```
+- **scanner.py**: `FeatureScannerRole` — scans project directory, produces `project_context.json` with language, conventions, file manifest
+- **planner.py**: `FeaturePlannerRole` — creates `implementation_plan.json` with both `files_to_create` AND `files_to_modify`
+- **coder.py**: `FeatureCoderRole` — reads existing files, creates new files, modifies existing files, writes and runs tests
+- **reviewer.py**: `FeatureReviewerRole` — validates implementation via REVIEW_PASSED/REVIEW_FAILED token scanning (same pattern as CoderPipeline)
+- **writer.py**: `FeatureReportWriterRole` — produces `feature_report.md`
+
 ### `main.py` — Entry point
 ```
-python3 main.py [--mode coder|research|coderpp|topology|skill] [--backend deepseek|claude_cli] [--working-dir PATH] "requirement"
+python3 main.py [--mode coder|research|coderpp|topology|skill|feature] [--backend deepseek|claude_cli] [--working-dir PATH] "requirement"
 ```
 
 ### `claude_config.py` — Env setup
 Loads `claude_env_sample.json` (12 env vars). Falls back to `.example.json`. `merge_claude_env()` merges with `os.environ`.
 
 ### Directories
-- `research/`: head_agent, worker_agent, reviewer_agent, writer
-- `coderpp/`: head_agent, worker_agent, reviewer_agent, organizer
-- `topology/`: analyzer, designer, evaluator, writer
-- `skill/`: scanner, detectors, aggregator, writer
+- `pipeline/`: base, coder, research, coderpp, topology, skill, feature (6 pipeline classes + BasePipeline)
+- `tools/`: registry, functions, feature_tools (ToolSpec + 7 tool implementations + 18+ role methods)
+- `feature/`: scanner, planner, coder, reviewer, writer (5 agent roles)
+- `research/`: head_agent, worker_agent, reviewer_agent, writer (4 agent roles)
+- `coderpp/`: head_agent, worker_agent, reviewer_agent, organizer (4 agent roles)
+- `topology/`: analyzer, designer, evaluator, writer (4 agent roles)
+- `skill/`: scanner, detectors, aggregator, writer (4 agent roles)
+- `test/`: test_smoke, test_topology, test_skill, test_feature_v2 (97 tests)
+- `utils.py`: shared helpers (extract_json_object, safe_read)
 
 ## Setup
 
@@ -129,6 +150,14 @@ pip install -r requirements.txt
 - CoderPP workers can get stuck on TaskOutput framework calls when modifying pipeline.py
 
 ## Version History
+
+### v1.6 (June 2026) — Feature Pipeline + Modular Package Structure
+- **Feature Pipeline**: 5-node graph (scanner → planner → coder ↔ reviewer → writer) for adding/editing code in existing projects. 5 AgentRoles in `feature/`. Supports both `files_to_create` AND `files_to_modify`.
+- **Modular packages**: `pipeline/` (7 modules, split from 2,334-line monolith), `tools/` (3 modules: registry + functions + feature_tools), `test/` (4 test files). `feature/` contains ONLY agent role definitions.
+- **Shared utilities**: `utils.py` — `extract_json_object()` and `safe_read()` used across feature roles.
+- **ToolRegistry**: 5 new feature role classmethods via `feature_tools.py`, auto-applied at import time.
+- **main.py**: 6 modes — coder, research, coderpp, topology, skill, feature.
+- **Verified**: All 6 pipelines pass end-to-end with claude_cli backend. 97 tests pass (42 legacy + 55 feature).
 
 ### v1.5 (June 2026) — Topology Optimizer + Skill Summarizer
 - **Topology Optimizer**: 4-node linear graph (analyzer → designer → evaluator → writer). Determines optimal agent topology for any task description. 4 AgentRoles in `topology/`.

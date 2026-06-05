@@ -1,47 +1,79 @@
 ---
 name: oop-refactoring
-description: OOP reorganization — 5-layer class hierarchy replacing procedural code. May 2026.
+description: OOP reorganization — 5-layer class hierarchy with 23 concrete roles and 6 pipeline classes. v1.4+.
 metadata: 
   node_type: memory
   type: project
-  originSessionId: c3d0976f-73e9-4392-9e4d-e8fbd0bcb43c
+  originSessionId: 9c942f95-5fb5-4276-8e53-c16059ca5e31
 ---
 
-## OOP Refactoring (May 2026)
+## OOP Architecture (v1.4+, updated v1.6)
 
 Reorganized UMAF from procedural/functional to object-oriented with a 5-layer class hierarchy.
 
-### New Class Hierarchy
-
-**Layer 0 — Data Types:**
+### Layer 0 — Data Types
 - `AgentResult` dataclass (agent.py) — messages, iterations, success
 - `ToolSpec` dataclass (tools.py) — name, description, parameters
 
-**Layer 1 — Infrastructure:**
+### Layer 1 — Infrastructure
 - `LLMProvider` ABC + `DeepSeekProvider` + `ClaudeCLIProvider` (llm.py) — unified backend interface
-- `ToolRegistry` class (tools.py) — centralized tool specs, 12 role-specific methods
-- `ClaudeConfig` class (claude_config.py) — lazy-loading config, replaces import-time singleton
+- `ToolRegistry` class (tools.py) — centralized tool specs, 16+ role-specific classmethods
+- `ClaudeConfig` class (claude_config.py) — lazy-loading config
 
-**Layer 2 — Agent Core:**
-- `BaseAgent` — unchanged logic, constructor/return type modernized
+### Layer 2 — Agent Core
+- `BaseAgent` — autonomous agent loop with circuit breakers
 - `AgentRole` ABC — template method: `tools_for_backend()`, `build_task()`, `parse_result()`, `execute()`
 
-**Layer 3 — 10 Concrete Roles:**
-- `CoderRole`, `ReviewerRole` (pipeline.py)
-- `ResearchDecomposerRole` (research/head_agent.py)
-- `ResearchWorkerRole` (research/worker_agent.py)
-- `ResearchReviewerRole` (research/reviewer_agent.py)
-- `WriterRole` (research/writer.py)
-- `CoderPPDecomposerRole` (coderpp/head_agent.py)
-- `CoderPPWorkerRole` (coderpp/worker_agent.py)
-- `CoderPPReviewerRole` (coderpp/reviewer_agent.py)
-- `OrganizerRole` (coderpp/organizer.py)
+### Layer 3 — 18 Concrete Roles
 
-**Layer 4 — 3 Pipeline Classes:**
-- `BasePipeline` → `CoderPipeline`, `ResearchPipeline`, `CoderPPPipeline`
+**Coder pipeline** (pipeline/coder.py):
+- `CoderRole`, `ReviewerRole`
+
+**Research pipeline** (research/):
+- `ResearchDecomposerRole` (head_agent.py)
+- `ResearchWorkerRole` (worker_agent.py)
+- `ResearchReviewerRole` (reviewer_agent.py)
+- `WriterRole` (writer.py)
+
+**CoderPP pipeline** (coderpp/):
+- `CoderPPDecomposerRole` (head_agent.py)
+- `CoderPPWorkerRole` (worker_agent.py)
+- `CoderPPReviewerRole` (reviewer_agent.py)
+- `OrganizerRole` (organizer.py)
+
+**Topology pipeline** (topology/):
+- `TopologyAnalyzerRole` (analyzer.py)
+- `TopologyDesignerRole` (designer.py)
+- `TopologyEvaluatorRole` (evaluator.py)
+- `TopologyWriterRole` (writer.py)
+
+**Skill pipeline** (skill/):
+- `SkillScannerRole` (scanner.py)
+- `PythonDetectorRole` (detectors.py)
+- `JSDetectorRole` (detectors.py)
+- `InfraDetectorRole` (detectors.py)
+- `ConfigDocsDetectorRole` (detectors.py)
+- `SkillAggregatorRole` (aggregator.py)
+- `SkillReportWriterRole` (writer.py)
+
+**Feature pipeline** (feature/):
+- `FeatureScannerRole` (scanner.py)
+- `FeaturePlannerRole` (planner.py)
+- `FeatureCoderRole` (coder.py)
+- `FeatureReviewerRole` (reviewer.py)
+- `FeatureReportWriterRole` (writer.py)
+
+### Layer 4 — 6 Pipeline Classes (pipeline/)
+- `BasePipeline` → `CoderPipeline`, `ResearchPipeline`, `CoderPPPipeline`, `TopologyPipeline`, `SkillPipeline`, `FeaturePipeline`
+
+### Layer 5 — State Types (pipeline/*.py)
+- `MultiAgentState`, `ResearchState`, `CoderPPState`, `TopologyState`, `SkillState`, `FeatureState`
 
 ### Files Removed
-- `graph.py`, `research/graph.py`, `coderpp/graph.py` — dead code, duplicated in pipeline.py
+- `pipeline.py` — replaced by `pipeline/` package (7 modules)
+- `tools.py`, `tools_integration.py` — replaced by `tools/` package (3 modules)
+- `feature_pipeline.py` — replaced by `feature/` package (5 role files)
+- `graph.py`, `research/graph.py`, `coderpp/graph.py` — dead code
 
 ### Key Wins
 - Tool specs defined once in `ToolRegistry` (was duplicated in 8+ files)
@@ -50,5 +82,8 @@ Reorganized UMAF from procedural/functional to object-oriented with a 5-layer cl
 - All existing behavior preserved (circuit breakers, checkpoints, dedup, fallbacks)
 - Backward-compatible: `run_agent()`, `decompose_topic()`, etc. still work
 
+### Anti-pattern: double-parse
+`AgentRole.execute()` internally calls `parse_result()` and returns the parsed dict. Calling `role.parse_result()` on the return value causes `'dict' object has no attribute 'messages'`. Pipeline nodes should use the return value of `execute()` directly.
+
 **Why:** Eliminate code duplication, improve extensibility, enable type-safe agent composition.
-**How to apply:** New agent roles should subclass `AgentRole`. New pipelines should subclass `BasePipeline`. Use `ToolRegistry` for tool definitions, never module-level lists.
+**How to apply:** New agent roles subclass `AgentRole`. New pipelines subclass `BasePipeline`. Use `ToolRegistry` for tool definitions, never module-level lists.

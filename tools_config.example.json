@@ -43,5 +43,13 @@
     "detector": ["read_file", "write_file", "run_command"],
     "aggregator": ["read_file", "write_file"],
     "writer": ["read_file", "write_file"]
+  },
+
+  "feature": {
+    "scanner": ["read_file", "write_file", "run_command"],
+    "planner": ["read_file", "write_file"],
+    "coder": ["read_file", "write_file", "write_lines", "run_command"],
+    "reviewer": ["read_file", "run_command"],
+    "writer": ["write_file"]
   }
 }
