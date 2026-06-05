@@ -1,43 +1,45 @@
-"""Domain detector roles for the Skill Summarizer Pipeline.
+"""Skill-dimension detector roles for the Skill Pipeline v2.
 
-Four AgentRole subclasses that each analyze a project for skills in a
-specific domain:
-- PythonDetectorRole: Python version, packages, frameworks, testing, linting
-- JSDetectorRole: Node.js version, packages, frameworks, testing, TypeScript
-- InfraDetectorRole: Docker, Kubernetes, CI/CD, cloud, IaC
-- ConfigDocsDetectorRole: Config formats, documentation, API specs, tooling
+Four AgentRole subclasses that analyze an artifact for human skills across
+universal dimensions (not language-specific domains):
 
-Each detector reads ``project_scan.json`` (produced by SkillScannerRole)
+- DomainExpertiseDetectorRole: what specialized knowledge is demonstrated?
+- TechnicalCraftDetectorRole: how skilled is the creator at the medium?
+- MethodologyDetectorRole: what tools, workflows, and processes are evident?
+- RigorDetectorRole: how thorough, careful, and complete is the work?
+
+Each detector reads ``artifact_analysis.json`` (produced by the scanner v2)
 and writes a domain-specific JSON report consumed by SkillAggregatorRole.
 """
 
 import json
 import os
-import re
-import subprocess
-import sys
 from typing import Any
 
-# Ensure repo root is on sys.path so we can import agent.py and tools.py
-# __file__ is .../coderpp_output/modules/skill_agent_roles/skill/detectors.py
-# Repo root is 5 dirs up: .../universal_multi_agent_framework/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from agent import AgentResult, AgentRole  # noqa: E402
-from tools import ToolRegistry  # noqa: E402
+from agent import AgentResult, AgentRole
+from tools import ToolRegistry
+from utils import extract_json_object, _PROFICIENCY_SCORES
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Helpers shared across detectors
+# Helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _load_project_scan(working_dir: str) -> dict[str, Any] | None:
-    """Load project_scan.json from the working directory."""
-    path = os.path.join(working_dir, "project_scan.json")
+
+def _load_artifact_analysis(working_dir: str) -> dict[str, Any] | None:
+    """Load artifact_analysis.json from the working directory."""
+    path = os.path.join(working_dir, "artifact_analysis.json")
     if not os.path.exists(path):
+        # Fall back to project_scan.json for backward compat
+        scan_path = os.path.join(working_dir, "project_scan.json")
+        if os.path.exists(scan_path):
+            try:
+                with open(scan_path) as f:
+                    scan = json.load(f)
+                return {"surface_scan": scan, "artifact_type":
+                        {"type": "unknown", "confidence": "low"}}
+            except (json.JSONDecodeError, OSError):
+                pass
         return None
     try:
         with open(path) as f:
@@ -46,127 +48,35 @@ def _load_project_scan(working_dir: str) -> dict[str, Any] | None:
         return None
 
 
-def _extract_json_object(text: str) -> str | None:
-    """Extract the first complete JSON object from text."""
-    start = text.find('{')
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escape_next = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if escape_next:
-            escape_next = False
-            continue
-        if ch == '\\':
-            escape_next = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
-    return None
+def _get_all_files(analysis: dict[str, Any]) -> list[str]:
+    """Extract the full file list from an artifact analysis."""
+    surface = analysis.get("surface_scan", {})
+    cats = surface.get("file_categories", {})
+    files: list[str] = []
+    for cat_files in cats.values():
+        if isinstance(cat_files, list):
+            files.extend(cat_files)
+    return files
 
 
-def _run_cmd(cmd: str, cwd: str = ".", timeout: int = 30) -> tuple[str, int]:
-    """Run a shell command and return (output, returncode)."""
-    try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=cwd,
-        )
-        return (result.stdout + "\n" + result.stderr).strip(), result.returncode
-    except subprocess.TimeoutExpired:
-        return "Timeout", -1
-    except OSError as e:
-        return f"Error: {e}", -2
+def _get_content_text(analysis: dict[str, Any]) -> str:
+    """Concatenate all content samples into a single text for analysis."""
+    samples = analysis.get("content_samples", {})
+    return "\n\n".join(str(v) for v in samples.values())
 
 
-def _detect_framework(frameworks: list[tuple[str, list[str]]],
-                      all_files: list[str]) -> list[dict[str, Any]]:
-    """Match a list of (framework_name, [indicator_files]) against the
-    project files and return detected frameworks."""
-    detected: list[dict[str, Any]] = []
-    for fw_name, indicators in frameworks:
-        matched = []
-        for ind in indicators:
-            for fpath in all_files:
-                if ind in fpath or os.path.basename(fpath) == ind:
-                    if ind not in matched:
-                        matched.append(ind)
-        if matched:
-            detected.append({
-                "name": fw_name,
-                "indicators": matched,
-                "confidence": "high" if len(matched) >= 2 else "medium",
-            })
-    return detected
-
-
-def _format_scan_summary(project_scan: dict[str, Any] | None) -> str:
-    """Build an inline summary of the project scan for detector prompts.
-
-    When the scanner has already run, this summary is embedded directly in
-    the prompt so detectors don't need to read ``project_scan.json`` from
-    disk.  Falls back to instructing the agent to read the file if no scan
-    data is provided.
-    """
-    if not project_scan or not project_scan.get("file_categories"):
-        return (
-            "\n## Project Scan\n"
-            "No pre-computed project scan is available. "
-            "Read `project_scan.json` from the working directory to "
-            "understand the project structure before proceeding.\n"
-        )
-
-    cats = project_scan.get("file_categories", {})
-    total = project_scan.get("total_files", len(sum(cats.values(), [])))
-    dirs = project_scan.get("total_dirs", "?")
-
-    lines = [
-        "\n## Project Scan (pre-computed — NO need to read from disk)",
-        f"**Total files**: {total}  |  **Directories**: {dirs}",
-        "",
-        "### File Categories",
-    ]
-    for cat_name, label in [
-        ("source", "Source"), ("test", "Test"), ("config", "Config"),
-        ("docs", "Docs"), ("build", "Build/CI"), ("ci", "CI"),
-        ("other", "Other"),
-    ]:
-        files = cats.get(cat_name, [])
-        if files:
-            preview = ", ".join(f"`{f}`" for f in files[:8])
-            extra = f" ... (+{len(files) - 8} more)" if len(files) > 8 else ""
-            lines.append(f"- **{label}** ({len(files)}): {preview}{extra}")
-
-    # Key directories
-    dir_list = project_scan.get("directories", [])
-    if dir_list:
-        lines.append(f"\n### Key Directories\n{', '.join(f'`{d}`' for d in dir_list[:12])}")
-
-    lines.append("")
-    return "\n".join(lines)
+def _get_artifact_type(analysis: dict[str, Any]) -> str:
+    """Get the artifact type string."""
+    at = analysis.get("artifact_type", {})
+    return at.get("type", "unknown")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Base detector — reduces boilerplate across the four domain detectors
+# Base detector
 # ═══════════════════════════════════════════════════════════════════════════
 
 class _BaseDetectorRole(AgentRole):
-    """Shared base for the four domain detector roles.
-
-    Provides common parse_result logic (agent messages → disk → fallback)
-    so subclasses only need to define tools, prompts, and fallback logic.
-    """
+    """Shared base for the four skill-dimension detectors."""
 
     max_steps: int = 12
     output_file: str = ""
@@ -177,1025 +87,997 @@ class _BaseDetectorRole(AgentRole):
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      project_dir: str = ".", **context: Any) -> dict[str, Any]:
-        """Extract domain report: agent messages → disk file → fallback."""
+        """Extract domain report: agent messages → disk file → fallback.
+
+        Validates that values are actual results, not copies of the prompt
+        template (which uses ``<PLACEHOLDER>`` markers and pipe-delimited
+        example values).
+        """
         report: dict[str, Any] = {}
 
-        # 1. Agent response
         for msg in reversed(result.messages):
             content = msg.content if hasattr(msg, "content") else str(msg)
-            json_str = _extract_json_object(content)
+            json_str = extract_json_object(content)
             if json_str:
                 try:
                     parsed = json.loads(json_str)
-                    if "domain" in parsed or "skills" in parsed:
+                    if "domain" in parsed or "skills" in parsed or \
+                       "inferred_skills" in parsed:
+                        if self._is_valid_report(parsed):
+                            report = parsed
+                            break
+                except json.JSONDecodeError:
+                    continue
+
+        # Second pass: scan Write tool-call parameters for embedded JSON reports.
+        # When using claude_cli backend, the LLM writes output via the Write tool
+        # rather than emitting raw JSON in its response. The report JSON is
+        # embedded as an escaped string in the tool-call "content" parameter.
+        if not report and self.output_file:
+            for msg in reversed(result.messages):
+                content = msg.content if hasattr(msg, "content") else str(msg)
+                if "Write" not in content or self.output_file not in content:
+                    continue
+                json_str = extract_json_object(content)
+                if not json_str:
+                    continue
+                try:
+                    params = json.loads(json_str)
+                except json.JSONDecodeError:
+                    continue
+                # Check if this is a Write call targeting our output file
+                fp = params.get("file_path", "")
+                inner = params.get("content", "")
+                if not isinstance(inner, str) or not inner.strip():
+                    continue
+                if os.path.basename(fp) != self.output_file:
+                    continue
+                try:
+                    parsed = json.loads(inner)
+                    if isinstance(parsed, dict) and self._is_valid_report(parsed):
                         report = parsed
                         break
                 except json.JSONDecodeError:
                     continue
 
-        # 2. Disk file
         if not report and self.output_file:
             path = os.path.join(working_dir, self.output_file)
             if os.path.exists(path):
                 try:
                     with open(path) as f:
                         parsed = json.load(f)
-                    if isinstance(parsed, dict):
+                    if isinstance(parsed, dict) and self._is_valid_report(parsed):
                         report = parsed
                 except (json.JSONDecodeError, OSError):
                     pass
 
-        # 3. Fallback
         if not report:
             report = self._fallback_detect(project_dir, working_dir)
 
         return report
 
+    @staticmethod
+    def _is_valid_report(report: dict[str, Any]) -> bool:
+        """Reject reports that are copies of the prompt template.
+
+        Returns False only when values are clearly template placeholders
+        (pipe-delimited hints, angle brackets, or literal ``...``).
+        Legitimate skill/tool names like "Testing Strategy" or "Git"
+        are NOT rejected — only copies of the schema itself.
+        """
+        for skill in report.get("inferred_skills", []):
+            prof = skill.get("proficiency", "")
+            conf = skill.get("confidence", "")
+            name = skill.get("name", "")
+            evidence = skill.get("evidence", {})
+            # Pipe-delimited schema hint = template copy (e.g. "advanced|intermediate|beginner|expert")
+            if prof and "|" in str(prof):
+                return False
+            if conf and "|" in str(conf):
+                return False
+            # Angle-bracket placeholder (e.g. "<SKILL_NAME>")
+            if name and "<" in name:
+                return False
+            # Literal "..." evidence with no real data
+            ev_str = json.dumps(evidence) if isinstance(evidence, dict) else str(evidence)
+            if ev_str in ('{"description": "..."}', '{"indicators_matched": "..."}',
+                          '{"indicators": ["..."]}'):
+                return False
+        for tool in report.get("detected_tools", []):
+            tname = tool.get("name", "")
+            tprof = tool.get("proficiency", "")
+            tev = tool.get("evidence", [])
+            # Angle-bracket placeholder in tool name
+            if tname and "<" in tname:
+                if tprof and "|" in str(tprof):
+                    return False
+            # Pipe-delimited proficiency in tool
+            if tprof and "|" in str(tprof):
+                return False
+            # Literal "..." in tool evidence (but not real ellipsis in text)
+            if tev and len(tev) == 1 and str(tev[0]).strip() == "...":
+                return False
+        return True
+
     def _fallback_detect(self, project_dir: str,
                          working_dir: str) -> dict[str, Any]:
-        """Override in subclasses for domain-specific fallback detection."""
         raise NotImplementedError
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PythonDetectorRole
+# Detector 1 — Domain Expertise
 # ═══════════════════════════════════════════════════════════════════════════
 
-_PYTHON_FRAMEWORKS = [
-    ("Django", ["manage.py", "django", "wsgi.py", "asgi.py", "urls.py"]),
-    ("Flask", ["flask", "app.py", "wsgi.py"]),
-    ("FastAPI", ["fastapi", "main.py"]),
-    ("Pyramid", ["pyramid", "pserve"]),
-    ("Tornado", ["tornado"]),
-    ("aiohttp", ["aiohttp"]),
-    ("Sanic", ["sanic"]),
-    ("Streamlit", ["streamlit"]),
-    ("Gradio", ["gradio"]),
-    ("SQLAlchemy", ["sqlalchemy", "alembic"]),
-    ("Pydantic", ["pydantic"]),
-    ("Celery", ["celery"]),
-    ("Pytest", ["pytest", "conftest.py", "pytest.ini"]),
-    ("unittest", ["unittest", "test_"]),
-    ("Sphinx", ["sphinx", "conf.py"]),
-    ("Click", ["click"]),
-    ("Typer", ["typer"]),
-    ("Rich", ["rich"]),
-    ("Poetry", ["poetry.lock", "pyproject.toml"]),
-    ("pipenv", ["Pipfile"]),
-    ("hatch", ["hatch.toml"]),
-]
-
-_PYTHON_LINTING = [
-    ("ruff", ["ruff.toml", "ruff", ".ruff.toml"]),
-    ("black", ["black", "pyproject.toml"]),
-    ("flake8", ["flake8", ".flake8", "setup.cfg"]),
-    ("pylint", ["pylint", ".pylintrc"]),
-    ("mypy", ["mypy", "mypy.ini", ".mypy.ini", "pyproject.toml"]),
-    ("isort", ["isort", ".isort.cfg", "pyproject.toml"]),
-    ("bandit", ["bandit"]),
-    ("pre-commit", [".pre-commit-config.yaml"]),
-]
-
-_PYTHON_DATA_SCIENCE = [
-    ("numpy", ["numpy"]),
-    ("pandas", ["pandas"]),
-    ("scikit-learn", ["sklearn", "scikit-learn", "scikit_learn"]),
-    ("PyTorch", ["torch", "pytorch"]),
-    ("TensorFlow", ["tensorflow", "tf."]),
-    ("Keras", ["keras"]),
-    ("Jupyter", ["jupyter", ".ipynb", "ipynb"]),
-    ("matplotlib", ["matplotlib"]),
-    ("seaborn", ["seaborn"]),
-    ("plotly", ["plotly"]),
-    ("scipy", ["scipy"]),
-    ("statsmodels", ["statsmodels"]),
-    ("xgboost", ["xgboost"]),
-    ("lightgbm", ["lightgbm"]),
-    ("transformers", ["transformers", "huggingface"]),
-    ("spaCy", ["spacy"]),
-    ("NLTK", ["nltk"]),
-    ("OpenCV", ["cv2", "opencv"]),
-    ("Pillow", ["PIL", "Pillow"]),
-    ("Dask", ["dask"]),
-    ("Ray", ["ray"]),
-    ("MLflow", ["mlflow"]),
-    ("Weights & Biases", ["wandb"]),
-    ("LangChain", ["langchain"]),
-    ("LangGraph", ["langgraph"]),
-    ("LlamaIndex", ["llama_index", "llamaindex"]),
-]
+# Domain signal words — specialized terminology that indicates deep knowledge
+_DOMAIN_SIGNALS: dict[str, list[str]] = {
+    "Machine Learning": [
+        "neural network", "gradient descent", "backpropagation",
+        "transformer", "attention mechanism", "embedding", "fine-tun",
+        "cross-validation", "overfitting", "regularization", "dropout",
+        "batch normalization", "learning rate", "loss function",
+        "BERT", "GPT", "LLaMA", "Diffusion", "reinforcement learning",
+    ],
+    "Distributed Systems": [
+        "consensus", "Paxos", "Raft", "distributed lock", "sharding",
+        "replication", "CAP theorem", "eventual consistency",
+        "vector clock", "gossip protocol", "leader election",
+        "quorum", "two-phase commit", "Saga pattern",
+    ],
+    "Security": [
+        "XSS", "CSRF", "SQL injection", "zero-day", "penetration test",
+        "threat model", "OWASP", "cryptographic", "public key",
+        "certificate pinning", "sandbox", "privilege escalation",
+    ],
+    "Compiler Design": [
+        "lexer", "parser", "AST", "abstract syntax tree", "LLVM",
+        "intermediate representation", "code generation", "type checker",
+        "garbage collector", "register allocation", "SSA form",
+    ],
+    "Database Systems": [
+        "B-tree", "LSM tree", "write-ahead log", "MVCC",
+        "query optimizer", "index scan", "transaction isolation",
+        "serializable", "deadlock detection", "connection pool",
+    ],
+    "Game Development": [
+        "game loop", "entity component system", "collision detection",
+        "physics engine", "ray tracing", "shader", "frame buffer",
+        "sprite", "tilemap", "pathfinding", "A* algorithm",
+    ],
+    "Finance": [
+        "portfolio optimization", "risk parity", "Black-Scholes",
+        "Monte Carlo simulation", "VaR", "derivative pricing",
+        "quantitative", "alpha", "backtesting", "order book",
+    ],
+    "Scientific Computing": [
+        "partial differential equation", "finite element",
+        "numerical integration", "Monte Carlo", "computational fluid",
+        "molecular dynamics", "quantum", "eigenvalue", "sparse matrix",
+    ],
+    "Natural Language Processing": [
+        "tokenization", "named entity recognition", "part-of-speech",
+        "dependency parsing", "semantic role", "coreference resolution",
+        "text summarization", "machine translation", "BLEU score",
+    ],
+}
 
 
-class PythonDetectorRole(_BaseDetectorRole):
-    """Detect Python ecosystem skills: version, packages, frameworks, testing,
-    linting, type checking, and data science tools."""
+def _detect_domain_expertise(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic domain expertise detection from content signals."""
+    all_text = _get_content_text(analysis).lower()
+    all_files = _get_all_files(analysis)
+    all_files_str = " ".join(all_files).lower()
+    combined = all_text + " " + all_files_str
 
-    agent_name: str = "python_detector"
-    output_file: str = "python_report.json"
-    domain: str = "Python"
+    skills: list[dict[str, Any]] = []
+    for domain, signals in _DOMAIN_SIGNALS.items():
+        matches = [s for s in signals if s.lower() in combined]
+        if matches:
+            prof = "advanced" if len(matches) >= 5 else \
+                   "intermediate" if len(matches) >= 2 else "beginner"
+            skills.append({
+                "name": domain,
+                "proficiency": prof,
+                "confidence": "high" if len(matches) >= 4 else
+                              "medium" if len(matches) >= 2 else "low",
+                "evidence": {"signal_matches": matches[:8]},
+            })
 
-    def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+    # Sort by proficiency score
+    skills.sort(key=lambda s: (_PROFICIENCY_SCORES.get(s["proficiency"], 0), len(
+        s.get("evidence", {}).get("signal_matches", []))), reverse=True)
+
+    return skills[:10]
+
+
+class DomainExpertiseDetectorRole(_BaseDetectorRole):
+    """Detect specialized domain knowledge demonstrated in the artifact.
+
+    Asks: "What does the creator know deeply about?"
+    """
+
+    agent_name: str = "domain_expertise_detector"
+    output_file: str = "domain_expertise_report.json"
+    domain: str = "Domain Expertise"
+
+    def build_task(self, backend: str, working_dir: str = ".",
+                   project_dir: str = ".",
+                   artifact_analysis: dict[str, Any] | None = None,
                    **context: Any) -> str:
-        """Build the Python detection prompt."""
-        scan_summary = _format_scan_summary(project_scan)
+        """Build the domain expertise detection prompt."""
+        analysis = artifact_analysis or _load_artifact_analysis(working_dir)
+        artifact_type = _get_artifact_type(analysis or {})
+        content_text = _get_content_text(analysis or {})[:4000]
+        files_preview = "\n".join(_get_all_files(analysis or {})[:30])
+
         common = (
-            f"You are a Python ecosystem analyst. Your job is to analyze a "
-            f"project directory and identify all Python-related skills, tools, "
-            f"and technologies in use.\n\n"
-            f"## Project Directory\n{project_dir}\n"
-            f"{scan_summary}"
-            f"## Instructions\n"
-            f"1. The project structure is shown above. "
-            f"Focus your analysis on Python-related files and tools.\n"
-            f"2. Check for Python version indicators:\n"
-            f"   - Run `python3 --version` or `python --version`\n"
-            f"   - Look for `.python-version` file\n"
-            f"   - Look for `python_requires` in setup.cfg/pyproject.toml\n"
-            f"3. Check for package management:\n"
-            f"   - `requirements.txt`, `requirements-dev.txt`\n"
-            f"   - `setup.py`, `setup.cfg`\n"
-            f"   - `pyproject.toml` (setuptools, Poetry, hatch)\n"
-            f"   - `Pipfile`, `Pipfile.lock`\n"
-            f"4. Run `pip list 2>/dev/null || python3 -m pip list 2>/dev/null` "
-            f"to enumerate installed packages (if pip is available).\n"
-            f"5. Analyze the file listing for:\n"
-            f"   - **Web frameworks**: Django, Flask, FastAPI, Pyramid, etc.\n"
-            f"   - **Testing**: pytest, unittest, nose, tox\n"
-            f"   - **Linting & formatting**: ruff, black, flake8, pylint, mypy, "
-            f"isort, bandit\n"
-            f"   - **Data science**: numpy, pandas, scikit-learn, PyTorch, "
-            f"TensorFlow, Jupyter, matplotlib, etc.\n"
-            f"   - **AI/ML frameworks**: transformers, spaCy, LangChain, "
-            f"LlamaIndex, etc.\n"
-            f"6. For each detected skill, assign a **proficiency level**:\n"
-            f"   - `expert`: extensive configuration files, large codebase, "
-            f"multiple advanced features\n"
-            f"   - `advanced`: moderate configuration, multiple files using it\n"
-            f"   - `intermediate`: basic usage, some configuration present\n"
-            f"   - `beginner`: minimal usage, just listed as a dependency\n\n"
-            f"7. Write your findings as JSON to `python_report.json`:\n"
+            f"You are a domain expertise detector. Your job is to read an "
+            f"artifact and determine what specialized knowledge its creator "
+            f"demonstrates.\n\n"
+            f"## Artifact\n"
+            f"**Type**: {artifact_type}\n"
+            f"Working directory: {working_dir}\n\n"
+            f"### Files\n{files_preview}\n\n"
+            f"### Content Samples\n{content_text[:4000]}\n\n"
+            f"## Task\n"
+            f"1. Read `artifact_analysis.json` from {working_dir} for full details.\n"
+            f"2. Identify the specialized domains the creator demonstrates "
+            f"expertise in. For each domain, provide evidence from the "
+            f"artifact content.\n"
+            f"3. For software: look for ML, security, compilers, distributed "
+            f"systems, databases, game dev, etc.\n"
+            f"4. For articles/papers: look for subject matter expertise "
+            f"(economics, biology, history, philosophy, etc.).\n"
+            f"5. For each skill, assess proficiency and confidence.\n\n"
+            f"## Output: `{self.output_file}`\n"
             f"```json\n"
             f"{{\n"
-            f'  "domain": "Python",\n'
-            f'  "version": {{"detected": "3.11", "source": ".python-version"}},\n'
-            f'  "package_manager": ["pip", "poetry"],\n'
-            f'  "skills": [\n'
+            f'  "domain": "{self.domain}",\n'
+            f'  "inferred_skills": [\n'
             f'    {{\n'
-            f'      "name": "Django",\n'
-            f'      "category": "web_framework",\n'
-            f'      "proficiency": "advanced",\n'
-            f'      "evidence": ["manage.py", "settings.py"],\n'
-            f'      "version_hint": ">=4.0"\n'
+            f'      "name": "<SKILL_NAME>",\n'
+            f'      "proficiency": "beginner|intermediate|advanced|expert",\n'
+            f'      "confidence": "low|medium|high",\n'
+            f'      "evidence": {{\n'
+            f'        "signal_matches": ["<SPECIFIC_TERM_FOUND_IN_ARTIFACT>"],\n'
+            f'        "context": "<WHERE_AND_HOW_THIS_SKILL_APPEARS>"\n'
+            f'      }}\n'
             f'    }}\n'
             f'  ],\n'
-            f'  "installed_packages_preview": ["pkg1==1.0", ...],\n'
-            f'  "total_python_files": <int>,\n'
-            f'  "total_test_files": <int>\n'
+            f'  "detected_tools": [\n'
+            f'    {{\"name\": \"<TOOL_NAME>\", \"category\": \"<CATEGORY>\",\n'
+            f'     \"proficiency\": \"<PROFICIENCY>\"}}\n'
+            f'  ]\n'
             f"}}\n"
             f"```\n\n"
-            f"Working directory: {working_dir}"
+            f"IMPORTANT: Replace ALL <PLACEHOLDER> values with ACTUAL findings "
+            f"from the artifact. Do NOT copy placeholder text. If you find "
+            f"nothing, use empty arrays []. Output TASK_COMPLETE when done."
         )
 
         if backend == "claude_cli":
             backend_note = (
                 "\n\nUse your own knowledge — do NOT search the web. "
-                "Read the project scan, run available commands, and write "
-                "python_report.json. Output TASK_COMPLETE when done."
+                "Read artifact_analysis.json, detect domain expertise, "
+                f"write {self.output_file}. Output TASK_COMPLETE."
             )
         else:
             backend_note = (
-                "\n\nRead the project scan, run available commands, write "
-                "python_report.json, then output TASK_COMPLETE."
+                f"\n\nRead artifact_analysis.json, detect domain expertise, "
+                f"write {self.output_file}, output TASK_COMPLETE."
             )
 
         return common + backend_note
 
     def _fallback_detect(self, project_dir: str = ".",
                          working_dir: str = ".") -> dict[str, Any]:
-        """Deterministic Python detection without LLM."""
-        scan = _load_project_scan(working_dir) or {}
-        categories = scan.get("file_categories", {})
-        all_files = (
-            categories.get("source", []) +
-            categories.get("config", []) +
-            categories.get("test", []) +
-            categories.get("other", [])
-        )
-        if not all_files:
-            # Try direct find
-            try:
-                r = subprocess.run(
-                    f"find {project_dir} -type f -not -path '*/.git/*' "
-                    f"-not -path '*/node_modules/*' -not -path '*/__pycache__/*' | head -500",
-                    shell=True, capture_output=True, text=True,
-                    timeout=15, cwd=working_dir,
-                )
-                all_files = [f.strip() for f in r.stdout.strip().split("\n") if f.strip()]
-            except (subprocess.TimeoutExpired, OSError):
-                all_files = []
+        analysis = _load_artifact_analysis(working_dir) or {}
+        skills = _detect_domain_expertise(analysis)
 
-        py_files = [f for f in all_files if f.endswith(".py")]
-        test_files = [f for f in all_files if
-                      os.path.basename(f).startswith("test_") or
-                      os.path.basename(f).endswith("_test.py") or
-                      "test_" in f]
-
-        # Detect Python version
-        version_info: dict[str, str] = {}
-        version_info["detected"] = "unknown"
-
-        # Check .python-version
-        pv_path = os.path.join(working_dir, ".python-version")
-        if not os.path.exists(pv_path):
-            pv_path = os.path.join(working_dir, project_dir, ".python-version")
-        if os.path.exists(pv_path):
-            try:
-                with open(pv_path) as f:
-                    version_info["detected"] = f.read().strip()
-                version_info["source"] = ".python-version"
-            except OSError:
-                pass
-
-        # Try running python3 --version
-        if version_info.get("detected") == "unknown":
-            out, rc = _run_cmd("python3 --version", cwd=working_dir)
-            if rc == 0:
-                m = re.search(r"(\d+\.\d+\.?\d*)", out)
-                if m:
-                    version_info["detected"] = m.group(1)
-                    version_info["source"] = "python3 --version"
-
-        # Detect package manager
-        pkg_managers: list[str] = []
-        for f in all_files:
-            bn = os.path.basename(f)
-            if bn == "requirements.txt" and "pip" not in pkg_managers:
-                pkg_managers.append("pip")
-            if bn == "Pipfile" and "pipenv" not in pkg_managers:
-                pkg_managers.append("pipenv")
-            if bn == "poetry.lock" and "poetry" not in pkg_managers:
-                pkg_managers.append("poetry")
-            if bn == "pyproject.toml" and "pip" not in pkg_managers:
-                # Could be any modern tool, include pip as default
-                pkg_managers.append("pip")
-            if bn == "setup.py" and "setuptools" not in pkg_managers:
-                pkg_managers.append("setuptools")
-
-        # Detect skills
-        skills: list[dict[str, Any]] = []
-
-        # Frameworks
-        for fw_name, indicators in _PYTHON_FRAMEWORKS:
-            matched = []
-            for ind in indicators:
-                for fpath in all_files:
-                    bn = os.path.basename(fpath)
-                    if ind.lower() in bn.lower() or ind.lower() in fpath.lower():
-                        if ind not in matched:
-                            matched.append(ind)
-            if matched:
-                skills.append({
-                    "name": fw_name,
-                    "category": "web_framework" if fw_name in
-                        ("Django", "Flask", "FastAPI", "Pyramid", "Tornado",
-                         "aiohttp", "Sanic", "Streamlit", "Gradio")
-                        else "testing" if fw_name in ("Pytest", "unittest")
-                        else "linting" if fw_name in ("ruff", "black", "flake8",
-                            "pylint", "mypy", "isort", "bandit", "pre-commit")
-                        else "data_science" if fw_name in (
-                            "numpy", "pandas", "scikit-learn", "PyTorch",
-                            "TensorFlow", "Keras", "Jupyter", "matplotlib",
-                            "seaborn", "plotly", "scipy", "statsmodels",
-                            "xgboost", "lightgbm", "transformers", "spaCy",
-                            "NLTK", "OpenCV", "Pillow", "Dask", "Ray",
-                            "MLflow", "Weights & Biases", "LangChain",
-                            "LangGraph", "LlamaIndex")
-                        else "tooling",
-                    "proficiency": "advanced" if len(matched) >= 3
-                        else "intermediate" if len(matched) >= 2
-                        else "beginner",
-                    "evidence": matched,
-                    "version_hint": "",
-                })
+        # Also detect tools from file extensions
+        all_files = _get_all_files(analysis)
+        tools = _detect_common_tools(all_files)
 
         return {
-            "domain": "Python",
-            "version": version_info,
-            "package_manager": pkg_managers if pkg_managers else ["unknown"],
-            "skills": skills,
-            "installed_packages_preview": [],
-            "total_python_files": len(py_files),
-            "total_test_files": len(test_files),
+            "domain": self.domain,
+            "inferred_skills": skills,
+            "detected_tools": tools,
             "_fallback": True,
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# JSDetectorRole
+# Detector 2 — Technical Craft
 # ═══════════════════════════════════════════════════════════════════════════
 
-_JS_FRAMEWORKS = [
-    ("React", ["react", "jsx", "tsx", ".jsx", ".tsx"]),
-    ("Vue.js", ["vue", ".vue"]),
-    ("Angular", ["angular", "@angular", "angular.json"]),
-    ("Next.js", ["next.config", "next-env", "next", ".next"]),
-    ("Nuxt", ["nuxt.config", "nuxt"]),
-    ("Svelte", ["svelte", ".svelte"]),
-    ("Express", ["express"]),
-    ("Fastify", ["fastify"]),
-    ("NestJS", ["@nestjs", "nest-cli"]),
-    ("Gatsby", ["gatsby-config", "gatsby"]),
-    ("Remix", ["remix.config", "@remix-run"]),
-    ("Astro", ["astro.config", "astro"]),
-    ("Electron", ["electron"]),
-    ("React Native", ["react-native", "@react-native"]),
-    ("jQuery", ["jquery"]),
-    ("Redux", ["redux", "@reduxjs"]),
-    ("MobX", ["mobx"]),
-    ("Zustand", ["zustand"]),
-    ("Tailwind CSS", ["tailwind.config", "tailwind"]),
-    ("Bootstrap", ["bootstrap"]),
-    ("Material UI", ["@mui", "@material-ui", "material-ui"]),
-    ("Chakra UI", ["@chakra-ui", "chakra"]),
-    ("Ant Design", ["antd", "ant-design"]),
-    ("D3.js", ["d3", "d3.js"]),
-    ("Three.js", ["three"]),
-    ("Chart.js", ["chart.js", "chartjs"]),
-    ("Socket.io", ["socket.io", "socket.io-client"]),
-]
+# Code quality heuristics (language-agnostic)
+def _detect_code_craft(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic code craft detection from source content."""
+    all_text = _get_content_text(analysis)
+    all_files = _get_all_files(analysis)
+    artifact_type = _get_artifact_type(analysis)
 
-_JS_TESTING = [
-    ("Jest", ["jest.config", "jest", ".test.", "spec.", "__tests__"]),
-    ("Mocha", ["mocha", ".mocharc"]),
-    ("Vitest", ["vitest.config", "vitest"]),
-    ("Cypress", ["cypress", "cypress.config"]),
-    ("Playwright", ["playwright.config", "@playwright"]),
-    ("Testing Library", ["@testing-library", "testing-library"]),
-    ("Storybook", ["storybook", ".storybook"]),
-]
+    skills: list[dict[str, Any]] = []
 
-_JS_BUILD = [
-    ("Webpack", ["webpack.config", "webpack"]),
-    ("Vite", ["vite.config", "vite"]),
-    ("Rollup", ["rollup.config", "rollup"]),
-    ("esbuild", ["esbuild"]),
-    ("Parcel", ["parcel", ".parcelrc"]),
-    ("Turbopack", ["turbopack"]),
-    ("Babel", [".babelrc", "babel.config", "@babel"]),
-    ("SWC", [".swcrc", "@swc"]),
-    ("ESLint", [".eslintrc", "eslint.config", "eslint"]),
-    ("Prettier", [".prettierrc", "prettier.config", "prettier"]),
-    ("TypeScript", ["tsconfig.json", "tsconfig", ".ts", ".tsx"]),
-    ("pnpm", ["pnpm-lock.yaml", "pnpm-workspace"]),
-    ("Yarn", ["yarn.lock", ".yarn"]),
-    ("npm", ["package-lock.json", "package.json"]),
-    ("Nx", ["nx.json", "@nrwl"]),
-    ("Turborepo", ["turbo.json"]),
-    ("Lerna", ["lerna.json"]),
-]
+    if artifact_type not in ("software_project",):
+        # For non-code artifacts, detect writing/creation craft
+        return _detect_writing_craft(all_text)
+
+    # Code craft signals
+    signals: dict[str, dict[str, Any]] = {
+        "Design Patterns": {
+            "indicators": ["class ", "factory", "strategy", "observer",
+                          "decorator", "singleton", "builder", "adapter",
+                          "dependency injection", "abstract class"],
+            "threshold_advanced": 4, "threshold_intermediate": 1,
+        },
+        "Error Handling Maturity": {
+            "indicators": ["except ", "raise ", "try:", "finally:",
+                          "error", "logging.", "logger.", "retry",
+                          "fallback", "circuit breaker"],
+            "threshold_advanced": 5, "threshold_intermediate": 2,
+            "penalty_indicators": ["except Exception", "except:", "pass"],
+        },
+        "Type System Proficiency": {
+            "indicators": ["-> ", ": ", "type ", "TypeVar", "Generic[",
+                          "Protocol", "TypedDict", "dataclass", "@overload",
+                          "Union[", "Optional[", "| None", "interface "],
+            "threshold_advanced": 5, "threshold_intermediate": 2,
+        },
+        "Code Organization": {
+            "indicators": ["from ", "import ", "export ", "module",
+                          "__init__", "package", "namespace", "class ",
+                          "__all__"],
+            "threshold_advanced": 6, "threshold_intermediate": 2,
+        },
+        "Performance Awareness": {
+            "indicators": ["cache", "lazy", "async ", "await ", "thread",
+                          "process pool", "connection pool", "batch",
+                          "pipeline", "profiler", "benchmark"],
+            "threshold_advanced": 3, "threshold_intermediate": 1,
+        },
+        "Security Awareness": {
+            "indicators": ["validate", "sanitize", "escape", "hash",
+                          "encrypt", "decrypt", "auth", "token", "oauth",
+                          "csrf", "xss", "sql injection", "rate limit"],
+            "threshold_advanced": 3, "threshold_intermediate": 1,
+        },
+    }
+
+    text_lower = all_text.lower()
+    for skill_name, sig in signals.items():
+        indicators = sig["indicators"]
+        matches = [ind for ind in indicators if ind.lower() in text_lower]
+        match_count = len(matches)
+
+        # Penalties reduce proficiency
+        penalty = 0
+        if "penalty_indicators" in sig:
+            penalty = sum(1 for p in sig["penalty_indicators"]
+                         if p.lower() in text_lower)
+
+        adjusted = match_count - penalty
+        prof = "expert" if adjusted >= sig["threshold_advanced"] + 3 else \
+               "advanced" if adjusted >= sig["threshold_advanced"] else \
+               "intermediate" if adjusted >= sig["threshold_intermediate"] else \
+               "beginner"
+
+        if match_count > 0:
+            skills.append({
+                "name": skill_name,
+                "proficiency": prof,
+                "confidence": "high" if match_count >= 5 else
+                              "medium" if match_count >= 2 else "low",
+                "evidence": {"indicators_matched": matches[:8]},
+            })
+
+    prof_order = {"expert": 4, "advanced": 3, "intermediate": 2, "beginner": 1}
+    skills.sort(key=lambda s: prof_order.get(s["proficiency"], 0), reverse=True)
+    return skills
 
 
-class JSDetectorRole(_BaseDetectorRole):
-    """Detect JavaScript/Node.js ecosystem skills: version, packages,
-    frameworks, testing, build tools, and TypeScript."""
+def _detect_writing_craft(all_text: str) -> list[dict[str, Any]]:
+    """Detect writing/communication craft (non-code artifacts)."""
+    text = all_text.lower()
+    skills: list[dict[str, Any]] = []
 
-    agent_name: str = "js_detector"
-    output_file: str = "javascript_report.json"
-    domain: str = "JavaScript"
+    craft_signals: dict[str, dict[str, Any]] = {
+        "Argumentation": {
+            "indicators": ["therefore", "however", "moreover", "consequently",
+                          "in contrast", "on the other hand", "this suggests",
+                          "evidence", "counter", "argue", "claim"],
+            "threshold_advanced": 5, "threshold_intermediate": 2,
+        },
+        "Technical Writing": {
+            "indicators": ["## ", "### ", "```", "table", "figure",
+                          "diagram", "example", "note:", "warning:",
+                          "appendix", "reference", "citation"],
+            "threshold_advanced": 5, "threshold_intermediate": 2,
+        },
+        "Narrative Structure": {
+            "indicators": ["introduction", "conclusion", "summary",
+                          "background", "context", "overview", "in this",
+                          "chapter", "section", "part i"],
+            "threshold_advanced": 4, "threshold_intermediate": 2,
+        },
+        "Clarity": {
+            "indicators": ["for example", "in other words", "specifically",
+                          "namely", "that is", "to clarify", "in short",
+                          "simply put", "this means"],
+            "threshold_advanced": 4, "threshold_intermediate": 1,
+        },
+    }
 
-    def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+    for skill_name, sig in craft_signals.items():
+        matches = [ind for ind in sig["indicators"] if ind.lower() in text]
+        match_count = len(matches)
+        prof = "advanced" if match_count >= sig["threshold_advanced"] else \
+               "intermediate" if match_count >= sig["threshold_intermediate"] else \
+               "beginner"
+        if match_count > 0:
+            skills.append({
+                "name": skill_name,
+                "proficiency": prof,
+                "confidence": "high" if match_count >= 5 else
+                              "medium" if match_count >= 2 else "low",
+                "evidence": {"indicators_matched": matches[:8]},
+            })
+
+    return skills
+
+
+class TechnicalCraftDetectorRole(_BaseDetectorRole):
+    """Detect technical creation skills demonstrated in the artifact.
+
+    Asks: "How skilled is the creator at the medium itself?"
+    """
+
+    agent_name: str = "technical_craft_detector"
+    output_file: str = "technical_craft_report.json"
+    domain: str = "Technical Craft"
+
+    def build_task(self, backend: str, working_dir: str = ".",
+                   project_dir: str = ".",
+                   artifact_analysis: dict[str, Any] | None = None,
                    **context: Any) -> str:
-        """Build the JS/Node.js detection prompt."""
-        scan_summary = _format_scan_summary(project_scan)
+        """Build the technical craft detection prompt."""
+        analysis = artifact_analysis or _load_artifact_analysis(working_dir)
+        artifact_type = _get_artifact_type(analysis or {})
+        content_text = _get_content_text(analysis or {})[:4000]
+        files_preview = "\n".join(_get_all_files(analysis or {})[:30])
+
         common = (
-            f"You are a JavaScript/Node.js ecosystem analyst. Your job is to "
-            f"analyze a project directory and identify all JavaScript-related "
-            f"skills, tools, and technologies in use.\n\n"
-            f"## Project Directory\n{project_dir}\n"
-            f"{scan_summary}"
-            f"## Instructions\n"
-            f"1. The project structure is shown above. "
-            f"Focus your analysis on JavaScript/Node.js-related files and tools.\n"
-            f"2. Check for Node.js version:\n"
-            f"   - Run `node --version`\n"
-            f"   - Look for `.nvmrc` or `.node-version`\n"
-            f"   - Check `engines` field in package.json\n"
-            f"3. Check for package manager:\n"
-            f"   - `package-lock.json` (npm)\n"
-            f"   - `yarn.lock` + `.yarn/` (Yarn)\n"
-            f"   - `pnpm-lock.yaml` (pnpm)\n"
-            f"4. Check for TypeScript: look for `tsconfig.json`, `.ts`, `.tsx` files\n"
-            f"5. Analyze for:\n"
-            f"   - **Frontend frameworks**: React, Vue, Angular, Svelte, Next.js, etc.\n"
-            f"   - **Backend frameworks**: Express, Fastify, NestJS, etc.\n"
-            f"   - **Testing**: Jest, Mocha, Vitest, Cypress, Playwright\n"
-            f"   - **Build tools**: Webpack, Vite, Rollup, esbuild, Babel, SWC\n"
-            f"   - **Linting**: ESLint, Prettier\n"
-            f"   - **State management, UI libs, data viz**\n"
-            f"6. Assign proficiency levels (expert/advanced/intermediate/beginner).\n\n"
-            f"7. Write your findings to `javascript_report.json`:\n"
+            f"You are a technical craft evaluator. Your job is to assess how "
+            f"skillfully the creator handled the medium itself.\n\n"
+            f"## Artifact\n"
+            f"**Type**: {artifact_type}\n"
+            f"Working directory: {working_dir}\n\n"
+            f"### Files\n{files_preview}\n\n"
+            f"### Content Samples\n{content_text[:4000]}\n\n"
+            f"## Task\n"
+            f"1. Read `artifact_analysis.json` from {working_dir}.\n"
+            f"2. Evaluate the creator's skill at the medium:\n"
+            f"   - **For software**: design patterns, error handling, type "
+            f"system usage, code organization, performance awareness, security.\n"
+            f"   - **For articles/papers**: argumentation quality, technical "
+            f"writing, narrative structure, clarity.\n"
+            f"   - **For presentations**: visual design, pacing, storytelling.\n"
+            f"3. Assess proficiency based on depth, consistency, and "
+            f"sophistication of usage.\n\n"
+            f"## Output: `{self.output_file}`\n"
             f"```json\n"
             f"{{\n"
-            f'  "domain": "JavaScript",\n'
-            f'  "runtime": {{"node_version": "20.x", "source": ".nvmrc"}},\n'
-            f'  "package_manager": "npm",\n'
-            f'  "typescript": {{"used": true, "config": "tsconfig.json"}},\n'
-            f'  "skills": [\n'
+            f'  "domain": "{self.domain}",\n'
+            f'  "inferred_skills": [\n'
             f'    {{\n'
-            f'      "name": "React",\n'
-            f'      "category": "frontend_framework",\n'
-            f'      "proficiency": "advanced",\n'
-            f'      "evidence": ["next.config.js", "pages/*.tsx"],\n'
-            f'      "version_hint": "18.x"\n'
+            f'      "name": "<SKILL_NAME>",\n'
+            f'      "proficiency": "beginner|intermediate|advanced|expert",\n'
+            f'      "confidence": "low|medium|high",\n'
+            f'      "evidence": {{\n'
+            f'        "indicators_matched": ["<SPECIFIC_PATTERN_FOUND>"],\n'
+            f'        "context": "<WHERE_AND_HOW>"\n'
+            f'      }}\n'
             f'    }}\n'
             f'  ],\n'
-            f'  "total_js_files": <int>,\n'
-            f'  "total_ts_files": <int>,\n'
-            f'  "total_test_files": <int>\n'
+            f'  "detected_tools": [\n'
+            f'    {{\"name\": \"<TOOL_NAME>\", \"category\": \"<CATEGORY>\",\n'
+            f'     \"proficiency\": \"<PROFICIENCY>\"}}\n'
+            f'  ]\n'
             f"}}\n"
             f"```\n\n"
-            f"Working directory: {working_dir}"
+            f"IMPORTANT: Replace ALL <PLACEHOLDER> values with ACTUAL findings "
+            f"from the artifact. If nothing is found, use empty arrays []. "
+            f"Output TASK_COMPLETE when done."
         )
 
         if backend == "claude_cli":
             backend_note = (
-                "\n\nUse your own knowledge — do NOT search the web. "
-                "Read project_scan.json, run available version commands, "
-                "and write javascript_report.json. Output TASK_COMPLETE."
+                "\n\nUse your own knowledge. Read artifact_analysis.json, "
+                f"evaluate craft, write {self.output_file}. Output TASK_COMPLETE."
             )
         else:
             backend_note = (
-                "\n\nRead project_scan.json, run available version commands, "
-                "write javascript_report.json, output TASK_COMPLETE."
+                f"\n\nRead artifact_analysis.json, evaluate craft, "
+                f"write {self.output_file}, output TASK_COMPLETE."
             )
 
         return common + backend_note
 
     def _fallback_detect(self, project_dir: str = ".",
                          working_dir: str = ".") -> dict[str, Any]:
-        """Deterministic JS/Node.js detection without LLM."""
-        scan = _load_project_scan(working_dir) or {}
-        categories = scan.get("file_categories", {})
-        all_files = (
-            categories.get("source", []) +
-            categories.get("config", []) +
-            categories.get("test", []) +
-            categories.get("other", [])
-        )
-        if not all_files:
-            try:
-                r = subprocess.run(
-                    f"find {project_dir} -type f -not -path '*/.git/*' "
-                    f"-not -path '*/node_modules/*' | head -500",
-                    shell=True, capture_output=True, text=True,
-                    timeout=15, cwd=working_dir,
-                )
-                all_files = [f.strip() for f in r.stdout.strip().split("\n") if f.strip()]
-            except (subprocess.TimeoutExpired, OSError):
-                all_files = []
-
-        js_files = [f for f in all_files if f.endswith((".js", ".jsx", ".mjs", ".cjs"))]
-        ts_files = [f for f in all_files if f.endswith((".ts", ".tsx", ".mts", ".cts"))]
-        test_files = [f for f in all_files if ".test." in f or "spec." in f or
-                      "__tests__" in f or "/test/" in f or "/tests/" in f]
-
-        # Detect Node.js version
-        node_version: dict[str, str] = {"detected": "unknown"}
-        for nv_file in [".nvmrc", ".node-version"]:
-            p = os.path.join(working_dir, nv_file)
-            if not os.path.exists(p):
-                p = os.path.join(working_dir, project_dir, nv_file)
-            if os.path.exists(p):
-                try:
-                    with open(p) as f:
-                        node_version["detected"] = f.read().strip().lstrip("v")
-                    node_version["source"] = nv_file
-                    break
-                except OSError:
-                    pass
-
-        if node_version["detected"] == "unknown":
-            out, rc = _run_cmd("node --version", cwd=working_dir)
-            if rc == 0:
-                m = re.search(r"v?(\d+\.\d+\.\d+)", out)
-                if m:
-                    node_version["detected"] = m.group(1)
-                    node_version["source"] = "node --version"
-
-        # Detect package manager
-        pkg_manager = "unknown"
-        for f in all_files:
-            bn = os.path.basename(f)
-            if bn == "pnpm-lock.yaml":
-                pkg_manager = "pnpm"
-                break
-            elif bn == "yarn.lock":
-                pkg_manager = "yarn"
-                break
-            elif bn == "package-lock.json":
-                pkg_manager = "npm"
-                break
-            elif bn == "package.json":
-                pkg_manager = "npm"  # default
-
-        # Check TypeScript
-        ts_used = len(ts_files) > 0
-        ts_config = ""
-        for f in all_files:
-            bn = os.path.basename(f)
-            if bn in ("tsconfig.json", "tsconfig.base.json", "tsconfig.build.json"):
-                ts_config = bn
-                ts_used = True
-                break
-
-        # Detect skills
-        skills: list[dict[str, Any]] = []
-
-        all_indicators = _JS_FRAMEWORKS + _JS_TESTING + _JS_BUILD
-        for skill_name, indicators in all_indicators:
-            matched = []
-            for ind in indicators:
-                for fpath in all_files:
-                    bn = os.path.basename(fpath)
-                    if ind.lower() in bn.lower() or ind.lower() in fpath.lower():
-                        if ind not in matched:
-                            matched.append(ind)
-            if matched:
-                # Determine category
-                fw_names = {fw[0] for fw in _JS_FRAMEWORKS}
-                test_names = {t[0] for t in _JS_TESTING}
-                if skill_name in fw_names:
-                    cat = "frontend_framework" if skill_name not in ("Express", "Fastify", "NestJS") else "backend_framework"
-                elif skill_name in test_names:
-                    cat = "testing"
-                else:
-                    cat = "build_tooling"
-                skills.append({
-                    "name": skill_name,
-                    "category": cat,
-                    "proficiency": "advanced" if len(matched) >= 3
-                        else "intermediate" if len(matched) >= 2
-                        else "beginner",
-                    "evidence": matched,
-                    "version_hint": "",
-                })
+        analysis = _load_artifact_analysis(working_dir) or {}
+        skills = _detect_code_craft(analysis)
 
         return {
-            "domain": "JavaScript",
-            "runtime": node_version,
-            "package_manager": pkg_manager,
-            "typescript": {"used": ts_used, "config": ts_config},
-            "skills": skills,
-            "total_js_files": len(js_files),
-            "total_ts_files": len(ts_files),
-            "total_test_files": len(test_files),
+            "domain": self.domain,
+            "inferred_skills": skills,
+            "detected_tools": [],
             "_fallback": True,
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# InfraDetectorRole
+# Detector 3 — Methodology & Tooling
 # ═══════════════════════════════════════════════════════════════════════════
 
-_INFRA_INDICATORS = [
-    # Docker
-    ("Docker", ["Dockerfile", "docker-compose", ".dockerignore", "docker"]),
-    ("Docker Compose", ["docker-compose.yml", "docker-compose.yaml"]),
-    # Kubernetes
-    ("Kubernetes", ["k8s", "kubernetes", "deployment.yaml", "service.yaml",
-                    "ingress.yaml", "helm", "kustomization"]),
-    ("Helm", ["helm", "Chart.yaml", "values.yaml"]),
+_TOOL_INDICATORS: dict[str, list[str]] = {
+    # Version control
+    "Git": [".git", ".gitignore", ".gitattributes"],
+    "GitHub": [".github/"],
+    # Languages & runtimes
+    "Python": [".py", "pyproject.toml", "setup.py", "setup.cfg", "Pipfile"],
+    "JavaScript": ["package.json", ".js", "node_modules"],
+    "TypeScript": ["tsconfig.json", ".ts", ".tsx"],
+    "Go": ["go.mod", "go.sum", ".go"],
+    "Rust": ["Cargo.toml", ".rs"],
+    "Java": ["pom.xml", "build.gradle", ".java"],
+    # Testing
+    "pytest": ["pytest", "conftest.py", "test_"],
+    "Jest": ["jest.config", ".test.js", ".test.ts", "__tests__"],
+    "unittest": ["unittest", "TestCase"],
     # CI/CD
-    ("GitHub Actions", [".github/workflows", "action.yml"]),
-    ("GitLab CI", [".gitlab-ci.yml"]),
-    ("Jenkins", ["Jenkinsfile"]),
-    ("Travis CI", [".travis.yml"]),
-    ("CircleCI", [".circleci", "config.yml"]),
-    ("Azure Pipelines", ["azure-pipelines.yml", "azure-pipelines"]),
-    ("Bitbucket Pipelines", ["bitbucket-pipelines.yml"]),
-    # Cloud providers
-    ("AWS", ["aws", "serverless.yml", "samconfig.toml", ".aws"]),
-    ("GCP", ["gcp", "gcloud", ".gcloudignore", "app.yaml", "cloudbuild"]),
-    ("Azure", ["azure", "azurerm", ".azure"]),
-    # IaC
-    ("Terraform", ["terraform", ".tf", ".tfvars", "terraform.tfstate"]),
-    ("Pulumi", ["pulumi", "Pulumi.yaml"]),
-    ("CloudFormation", ["cloudformation", ".template", "cfn-"]),
-    ("Ansible", ["ansible", "playbook.yml", "playbook.yaml", "ansible.cfg"]),
-    ("Chef", ["chef", "Berksfile", "Policyfile"]),
-    ("Puppet", ["puppet", "Puppetfile"]),
-    ("Vagrant", ["Vagrantfile"]),
-    # Monitoring / Observability
-    ("Prometheus", ["prometheus", "prometheus.yml", "alertmanager"]),
-    ("Grafana", ["grafana", "dashboard.json"]),
-    ("OpenTelemetry", ["opentelemetry", "otel"]),
-    ("Datadog", ["datadog", "datadog-agent"]),
-    ("Sentry", ["sentry"]),
-    ("ELK Stack", ["elasticsearch", "logstash", "kibana", "filebeat"]),
-    # Service Mesh
-    ("Istio", ["istio", "virtual-service", "destination-rule"]),
-    ("Linkerd", ["linkerd"]),
-    # Infrastructure tools
-    ("Nginx", ["nginx.conf", "nginx", "sites-available"]),
-    ("Apache", ["httpd.conf", "apache", ".htaccess"]),
-    ("HAProxy", ["haproxy", "haproxy.cfg"]),
-    ("Redis", ["redis", "redis.conf"]),
-    ("PostgreSQL", ["postgresql", "pg_hba.conf", "postgres"]),
-    ("MySQL", ["mysql", "my.cnf"]),
-    ("MongoDB", ["mongodb", "mongod", "mongod.conf"]),
-    ("RabbitMQ", ["rabbitmq", "rabbitmq.conf"]),
-    ("Kafka", ["kafka", "server.properties"]),
-]
+    "GitHub Actions": [".github/workflows"],
+    "GitLab CI": [".gitlab-ci.yml"],
+    "Jenkins": ["Jenkinsfile"],
+    # Containers
+    "Docker": ["Dockerfile", "docker-compose"],
+    "Kubernetes": [".yaml", "kustomization", "helm"],
+    # Docs & writing
+    "LaTeX": [".tex", ".bib"],
+    "Markdown": [".md"],
+    "Sphinx": ["conf.py", "index.rst"],
+    "MkDocs": ["mkdocs.yml"],
+    "Jupyter": [".ipynb"],
+    # Data
+    "Pandas": ["pandas", "DataFrame"],
+    "NumPy": ["numpy", "ndarray"],
+    "PyTorch": ["torch", "nn.Module"],
+    "scikit-learn": ["sklearn", "fit(", "predict("],
+    # Web
+    "React": ["react", "jsx", "tsx"],
+    "Vue": ["vue", ".vue"],
+    "Django": ["manage.py", "settings.py", "urls.py"],
+    "Flask": ["flask", "app.py"],
+    "FastAPI": ["fastapi", "uvicorn"],
+    # Build
+    "Webpack": ["webpack.config"],
+    "Vite": ["vite.config"],
+    "ESLint": [".eslintrc", "eslint.config"],
+    "Prettier": [".prettierrc"],
+    # Infra
+    "Terraform": [".tf"],
+    "Ansible": ["ansible", "playbook"],
+}
 
 
-class InfraDetectorRole(_BaseDetectorRole):
-    """Detect infrastructure & DevOps skills: Docker, Kubernetes, CI/CD,
-    cloud providers, IaC tools, monitoring, databases, and service mesh."""
+def _detect_tools(all_files: list[str], all_text: str) -> list[dict[str, Any]]:
+    """Deterministic tool detection from files and content."""
+    files_str = " ".join(all_files)
+    combined = (files_str + " " + all_text).lower()
+    tools: list[dict[str, Any]] = []
 
-    agent_name: str = "infra_detector"
-    output_file: str = "infrastructure_report.json"
-    domain: str = "Infrastructure"
+    for tool, indicators in _TOOL_INDICATORS.items():
+        matches = [ind for ind in indicators if ind.lower() in combined]
+        if matches:
+            # Categorize
+            if tool in ("Python", "JavaScript", "TypeScript", "Go", "Rust", "Java"):
+                cat = "Languages & Runtimes"
+            elif tool in ("pytest", "Jest", "unittest"):
+                cat = "Testing"
+            elif tool in ("GitHub Actions", "GitLab CI", "Jenkins"):
+                cat = "CI/CD"
+            elif tool in ("Docker", "Kubernetes"):
+                cat = "Containers & Orchestration"
+            elif tool in ("LaTeX", "Markdown", "Sphinx", "MkDocs", "Jupyter"):
+                cat = "Documentation Tools"
+            elif tool in ("React", "Vue", "Django", "Flask", "FastAPI"):
+                cat = "Web Frameworks"
+            elif tool in ("Pandas", "NumPy", "PyTorch", "scikit-learn"):
+                cat = "Data Science & ML"
+            elif tool in ("Terraform", "Ansible"):
+                cat = "Infrastructure as Code"
+            elif tool in ("Webpack", "Vite", "ESLint", "Prettier"):
+                cat = "Build & Tooling"
+            else:
+                cat = "Other Tools"
 
-    def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+            prof = "advanced" if len(matches) >= 3 else \
+                   "intermediate" if len(matches) >= 2 else "beginner"
+
+            tools.append({
+                "name": tool, "category": cat, "proficiency": prof,
+                "evidence": matches[:5],
+            })
+
+    return sorted(tools, key=lambda t: len(t.get("evidence", [])), reverse=True)
+
+
+def _detect_common_tools(all_files: list[str]) -> list[dict[str, Any]]:
+    """Public helper — detect tools from file list only."""
+    return _detect_tools(all_files, "")
+
+
+def _detect_methodology_skills(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic methodology skill detection."""
+    all_files = _get_all_files(analysis)
+    all_text = _get_content_text(analysis)
+    all_files_str = " ".join(all_files).lower()
+    combined = (all_files_str + " " + all_text).lower()
+
+    skills: list[dict[str, Any]] = []
+
+    method_signals: dict[str, dict[str, Any]] = {
+        "Git Workflow Maturity": {
+            "signals": ["feat:", "fix:", "chore:", "refactor:", "docs:",
+                       "test:", "conventional commit", "branch",
+                       "merge request", "pull request"],
+            "file_signals": [".git/"],
+        },
+        "CI/CD Sophistication": {
+            "signals": ["pipeline", "deploy", "stage", "job:", "workflow",
+                       "ci.yml", "build-and-test", "release"],
+            "file_signals": [".github/workflows", ".gitlab-ci.yml", "Jenkinsfile",
+                           ".circleci", "azure-pipelines"],
+        },
+        "Dependency Management": {
+            "signals": ["version", "lock", "pinned", "requirements",
+                       "dependencies", "devDependencies"],
+            "file_signals": ["pyproject.toml", "package.json", "poetry.lock",
+                           "Pipfile.lock", "yarn.lock", "package-lock.json",
+                           "Cargo.lock", "go.sum"],
+        },
+        "Environment Management": {
+            "signals": ["Dockerfile", "docker-compose", "devcontainer",
+                       "virtualenv", ".venv", "conda", "nix", "nvm"],
+            "file_signals": ["Dockerfile", "docker-compose.yml",
+                           ".devcontainer", ".python-version", ".nvmrc"],
+        },
+        "Incremental Development": {
+            "signals": ["TODO", "FIXME", "HACK", "WIP", "v0.", "v1.",
+                       "changelog", "version history", "migration"],
+            "file_signals": ["CHANGELOG.md", "MIGRATION.md", "VERSION"],
+        },
+    }
+
+    for skill_name, sig in method_signals.items():
+        text_matches = [s for s in sig["signals"] if s.lower() in combined]
+        file_matches = [s for s in sig["file_signals"] if s.lower() in all_files_str]
+        total = len(text_matches) + len(file_matches) * 2  # file matches count double
+
+        prof = "advanced" if total >= 5 else \
+               "intermediate" if total >= 2 else "beginner"
+        conf = "high" if total >= 5 else "medium" if total >= 3 else "low"
+
+        if total > 0:
+            skills.append({
+                "name": skill_name,
+                "proficiency": prof,
+                "confidence": conf,
+                "evidence": {
+                    "text_signals": text_matches[:6],
+                    "file_signals": file_matches[:6],
+                },
+            })
+
+    prof_order = {"expert": 4, "advanced": 3, "intermediate": 2, "beginner": 1}
+    skills.sort(key=lambda s: prof_order.get(s["proficiency"], 0), reverse=True)
+    return skills
+
+
+class MethodologyDetectorRole(_BaseDetectorRole):
+    """Detect tools, workflows, and processes used to create the artifact.
+
+    Asks: "What tools, workflows, and processes are evident?"
+    """
+
+    agent_name: str = "methodology_detector"
+    output_file: str = "methodology_report.json"
+    domain: str = "Methodology & Tooling"
+
+    def build_task(self, backend: str, working_dir: str = ".",
+                   project_dir: str = ".",
+                   artifact_analysis: dict[str, Any] | None = None,
                    **context: Any) -> str:
-        """Build the infrastructure detection prompt."""
-        scan_summary = _format_scan_summary(project_scan)
+        """Build the methodology detection prompt."""
+        analysis = artifact_analysis or _load_artifact_analysis(working_dir)
+        artifact_type = _get_artifact_type(analysis or {})
+        all_files = _get_all_files(analysis or {})
+        files_preview = "\n".join(all_files[:40])
+
         common = (
-            f"You are an infrastructure & DevOps analyst. Your job is to "
-            f"analyze a project directory and identify all infrastructure and "
-            f"DevOps tools and technologies in use.\n\n"
-            f"## Project Directory\n{project_dir}\n"
-            f"{scan_summary}"
-            f"## Instructions\n"
-            f"1. The project structure is shown above. "
-            f"Focus your analysis on infrastructure and DevOps files.\n"
-            f"2. Analyze the file listing for infrastructure indicators:\n"
-            f"   - **Containerization**: Docker, Docker Compose, Podman\n"
-            f"   - **Orchestration**: Kubernetes, Helm, Kustomize, OpenShift\n"
-            f"   - **CI/CD**: GitHub Actions, GitLab CI, Jenkins, CircleCI, "
-            f"Travis CI, Azure Pipelines, Bitbucket Pipelines\n"
-            f"   - **Cloud Providers**: AWS (CloudFormation, SAM, CDK), "
-            f"GCP (Cloud Build, Deployment Manager), Azure (ARM, Bicep)\n"
-            f"   - **IaC**: Terraform, Pulumi, Ansible, Chef, Puppet, Vagrant\n"
-            f"   - **Monitoring**: Prometheus, Grafana, OpenTelemetry, Datadog, "
-            f"Sentry, ELK Stack\n"
-            f"   - **Service Mesh**: Istio, Linkerd, Consul\n"
-            f"   - **Web Servers**: Nginx, Apache, HAProxy, Caddy, Traefik\n"
-            f"   - **Databases**: PostgreSQL, MySQL, MongoDB, Redis, "
-            f"RabbitMQ, Kafka, Elasticsearch\n"
-            f"3. For each detected technology, assign a proficiency level.\n\n"
-            f"4. Write findings to `infrastructure_report.json`:\n"
+            f"You are a methodology and tooling detector. Your job is to "
+            f"identify what tools, workflows, and processes the creator used.\n\n"
+            f"## Artifact\n"
+            f"**Type**: {artifact_type}\n"
+            f"Working directory: {working_dir}\n\n"
+            f"### Files ({len(all_files)} total)\n{files_preview}\n\n"
+            f"## Task\n"
+            f"1. Read `artifact_analysis.json` from {working_dir}.\n"
+            f"2. Detect tools from file indicators (config files, extensions).\n"
+            f"3. Infer methodology skills:\n"
+            f"   - Git workflow maturity (conventional commits, branching)\n"
+            f"   - CI/CD sophistication (pipeline complexity)\n"
+            f"   - Dependency management (lock files, version pinning)\n"
+            f"   - Environment management (Docker, venv, containers)\n"
+            f"   - Release management (versioning, changelogs)\n"
+            f"   - Incremental development (small changes, refactoring)\n"
+            f"4. For non-code artifacts, look for text-specific tools "
+            f"(LaTeX, Markdown, reference managers, CMS, SEO).\n\n"
+            f"## Output: `{self.output_file}`\n"
             f"```json\n"
             f"{{\n"
-            f'  "domain": "Infrastructure",\n'
-            f'  "skills": [\n'
+            f'  "domain": "{self.domain}",\n'
+            f'  "detected_tools": [\n'
+            f'    {{\"name\": "<TOOL_NAME>", "category": "<CATEGORY>",\n'
+            f'     "proficiency": "advanced", "evidence": ["commit messages"]}}\n'
+            f'  ],\n'
+            f'  "inferred_skills": [\n'
             f'    {{\n'
-            f'      "name": "Docker",\n'
-            f'      "category": "containerization",\n'
-            f'      "proficiency": "advanced",\n'
-            f'      "evidence": ["Dockerfile", "docker-compose.yml"],\n'
-            f'      "version_hint": ""\n'
+            f'      "name": "<SKILL_NAME>",\n'
+            f'      "proficiency": "advanced|intermediate|beginner|expert",\n'
+            f'      "confidence": "high|medium|low",\n'
+            f'      "evidence": {{"description": "..."}}\n'
             f'    }}\n'
             f'  ]\n'
             f"}}\n"
             f"```\n\n"
-            f"Working directory: {working_dir}"
+            f"IMPORTANT: Replace ALL <PLACEHOLDER> values with ACTUAL findings from the artifact. If nothing is found, use empty arrays []. Output TASK_COMPLETE when done."
         )
 
         if backend == "claude_cli":
             backend_note = (
-                "\n\nUse your own knowledge — do NOT search the web. "
-                "Read project_scan.json, analyze files, write "
-                "infrastructure_report.json. Output TASK_COMPLETE."
+                "\n\nUse your own knowledge. Read artifact_analysis.json, "
+                f"detect tools and methodology, write {self.output_file}. "
+                "Output TASK_COMPLETE."
             )
         else:
             backend_note = (
-                "\n\nRead project_scan.json, analyze files, write "
-                "infrastructure_report.json, output TASK_COMPLETE."
+                f"\n\nRead artifact_analysis.json, detect tools and "
+                f"methodology, write {self.output_file}, output TASK_COMPLETE."
             )
 
         return common + backend_note
 
     def _fallback_detect(self, project_dir: str = ".",
                          working_dir: str = ".") -> dict[str, Any]:
-        """Deterministic infrastructure detection without LLM."""
-        scan = _load_project_scan(working_dir) or {}
-        categories = scan.get("file_categories", {})
-        all_files = (
-            categories.get("source", []) +
-            categories.get("config", []) +
-            categories.get("build", []) +
-            categories.get("ci", []) +
-            categories.get("other", [])
-        )
-        if not all_files:
-            try:
-                r = subprocess.run(
-                    f"find {project_dir} -type f -not -path '*/.git/*' "
-                    f"-not -path '*/node_modules/*' -not -path '*/__pycache__/*' "
-                    f"| head -500",
-                    shell=True, capture_output=True, text=True,
-                    timeout=15, cwd=working_dir,
-                )
-                all_files = [f.strip() for f in r.stdout.strip().split("\n") if f.strip()]
-            except (subprocess.TimeoutExpired, OSError):
-                all_files = []
+        analysis = _load_artifact_analysis(working_dir) or {}
+        all_files = _get_all_files(analysis)
+        all_text = _get_content_text(analysis)
 
-        skills: list[dict[str, Any]] = []
-        for skill_name, indicators in _INFRA_INDICATORS:
-            matched = []
-            for ind in indicators:
-                for fpath in all_files:
-                    bn = os.path.basename(fpath)
-                    if ind.lower() in bn.lower() or ind.lower() in fpath.lower():
-                        if ind not in matched:
-                            matched.append(ind)
-            if matched:
-                # Determine category
-                containerization = {"Docker", "Docker Compose"}
-                orchestration = {"Kubernetes", "Helm"}
-                cicd = {"GitHub Actions", "GitLab CI", "Jenkins", "Travis CI",
-                        "CircleCI", "Azure Pipelines", "Bitbucket Pipelines"}
-                cloud = {"AWS", "GCP", "Azure"}
-                iac = {"Terraform", "Pulumi", "CloudFormation", "Ansible",
-                       "Chef", "Puppet", "Vagrant"}
-                monitoring = {"Prometheus", "Grafana", "OpenTelemetry",
-                              "Datadog", "Sentry", "ELK Stack"}
-                service_mesh = {"Istio", "Linkerd"}
-                web_server = {"Nginx", "Apache", "HAProxy"}
-                database = {"Redis", "PostgreSQL", "MySQL", "MongoDB",
-                            "RabbitMQ", "Kafka"}
-
-                if skill_name in containerization:
-                    cat = "containerization"
-                elif skill_name in orchestration:
-                    cat = "orchestration"
-                elif skill_name in cicd:
-                    cat = "ci_cd"
-                elif skill_name in cloud:
-                    cat = "cloud"
-                elif skill_name in iac:
-                    cat = "infrastructure_as_code"
-                elif skill_name in monitoring:
-                    cat = "monitoring"
-                elif skill_name in service_mesh:
-                    cat = "service_mesh"
-                elif skill_name in web_server:
-                    cat = "web_server"
-                elif skill_name in database:
-                    cat = "database"
-                else:
-                    cat = "other"
-
-                skills.append({
-                    "name": skill_name,
-                    "category": cat,
-                    "proficiency": "advanced" if len(matched) >= 3
-                        else "intermediate" if len(matched) >= 2
-                        else "beginner",
-                    "evidence": matched,
-                    "version_hint": "",
-                })
+        tools = _detect_tools(all_files, all_text)
+        skills = _detect_methodology_skills(analysis)
 
         return {
-            "domain": "Infrastructure",
-            "skills": skills,
+            "domain": self.domain,
+            "detected_tools": tools,
+            "inferred_skills": skills,
             "_fallback": True,
         }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ConfigDocsDetectorRole
+# Detector 4 — Depth & Rigor
 # ═══════════════════════════════════════════════════════════════════════════
 
-_CONFIG_FORMATS = [
-    ("YAML", [".yaml", ".yml"]),
-    ("TOML", [".toml", "pyproject.toml", "Cargo.toml"]),
-    ("JSON", [".json", "package.json", "tsconfig.json"]),
-    ("INI/CFG", [".ini", ".cfg", ".conf", "setup.cfg"]),
-    ("ENV", [".env", ".env.example", ".env.template"]),
-    ("XML", [".xml", "pom.xml", "web.config"]),
-]
+def _detect_rigor_skills(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deterministic rigor/depth detection."""
+    all_files = _get_all_files(analysis)
+    all_text = _get_content_text(analysis)
+    all_files_str = " ".join(all_files).lower()
+    combined = (all_files_str + " " + all_text).lower()
+    artifact_type = _get_artifact_type(analysis)
 
-_DOC_TYPES = [
-    ("README", ["readme.md", "readme.rst", "readme.txt", "README"]),
-    ("CONTRIBUTING", ["contributing.md", "contributing.rst"]),
-    ("CHANGELOG", ["changelog.md", "changelog.rst", "CHANGES", "HISTORY"]),
-    ("LICENSE", ["license", "license.md", "license.txt", "COPYING"]),
-    ("CODE_OF_CONDUCT", ["code_of_conduct", "code-of-conduct"]),
-    ("SECURITY", ["security.md", "security.txt"]),
-    ("Documentation Directory", ["docs/", "doc/", "documentation/"]),
-    ("Wiki", ["wiki/", ".wiki/"]),
-]
+    skills: list[dict[str, Any]] = []
 
-_API_SPECS = [
-    ("OpenAPI/Swagger", ["openapi", "swagger", "openapi.json", "openapi.yaml",
-                         "swagger.json", "swagger.yaml"]),
-    ("GraphQL", ["graphql", ".graphql", ".gql", "schema.graphql"]),
-    ("gRPC", [".proto", "grpc", "protobuf"]),
-    ("AsyncAPI", ["asyncapi", "asyncapi.yaml", "asyncapi.json"]),
-    ("JSON Schema", ["schema.json", ".schema.json"]),
-    ("RAML", [".raml"]),
-]
+    # Count file types
+    total = len(all_files) if all_files else 1
+    test_files = [f for f in all_files if
+                  "test_" in f or "_test" in f or "/test" in f or "/tests/" in f
+                  or "__tests__" in f or f.endswith(".test.js")
+                  or f.endswith(".test.ts") or f.endswith("_test.py")
+                  or f.endswith("_test.go")]
+    doc_files = [f for f in all_files if f.endswith((".md", ".rst", ".adoc"))
+                 or os.path.basename(f).lower().startswith(("readme", "contributing",
+                 "changelog", "license"))]
 
-_TOOLING = [
-    ("EditorConfig", [".editorconfig"]),
-    ("Git", [".gitignore", ".gitattributes", ".gitmodules"]),
-    ("Pre-commit", [".pre-commit-config.yaml", ".pre-commit-hooks.yaml"]),
-    ("Husky", [".husky", "husky"]),
-    ("Commitlint", ["commitlint", "commitlint.config"]),
-    ("Commitizen", ["cz", "commitizen", ".cz.toml"]),
-    ("Semantic Release", [".releaserc", "release.config", "semantic-release"]),
-    ("Renovate", ["renovate", "renovate.json", ".renovaterc"]),
-    ("Dependabot", ["dependabot", ".github/dependabot"]),
-    ("Dev Container", [".devcontainer", "devcontainer.json"]),
-    ("Gitpod", [".gitpod.yml", ".gitpod.Dockerfile"]),
-    ("Codespaces", [".devcontainer", "devcontainer.json"]),
-]
+    # Testing Strategy
+    test_ratio = len(test_files) / max(total, 1)
+    if test_files:
+        prof = "advanced" if test_ratio > 0.2 else \
+               "intermediate" if test_ratio > 0.05 else "beginner"
+        skills.append({
+            "name": "Testing Strategy",
+            "proficiency": prof,
+            "confidence": "high" if test_ratio > 0.15 else
+                          "medium" if test_ratio > 0.05 else "low",
+            "evidence": {
+                "test_count": len(test_files),
+                "test_ratio": round(test_ratio, 3),
+                "sample_files": test_files[:5],
+            },
+        })
+
+    # Test Coverage signals in content
+    coverage_signals = ["assert", "expect(", "should ", "test(", "it(",
+                        "describe(", "def test_", "class Test",
+                        "parameterize", "fixture", "mock", "stub",
+                        "edge case", "corner case", "boundary"]
+    coverage_matches = [s for s in coverage_signals if s.lower() in combined]
+    if coverage_matches:
+        prof = "advanced" if len(coverage_matches) >= 8 else \
+               "intermediate" if len(coverage_matches) >= 4 else "beginner"
+        skills.append({
+            "name": "Test Coverage Thoroughness",
+            "proficiency": prof,
+            "confidence": "high" if len(coverage_matches) >= 8 else
+                          "medium" if len(coverage_matches) >= 4 else "low",
+            "evidence": {"indicators": coverage_matches[:10]},
+        })
+
+    # Documentation Quality
+    doc_ratio = len(doc_files) / max(total, 1)
+    doc_content_signals = ["readme", "getting started", "installation",
+                          "usage", "api", "example", "tutorial", "guide",
+                          "reference", "faq", "troubleshooting", "contributing"]
+    doc_matches = [s for s in doc_content_signals if s in combined]
+    doc_score = len(doc_matches) + len(doc_files) * 2
+
+    if doc_files or doc_matches:
+        prof = "advanced" if doc_score >= 10 else \
+               "intermediate" if doc_score >= 4 else "beginner"
+        skills.append({
+            "name": "Documentation Quality",
+            "proficiency": prof,
+            "confidence": "high" if doc_score >= 8 else
+                          "medium" if doc_score >= 4 else "low",
+            "evidence": {
+                "doc_files": doc_files[:5],
+                "content_signals": doc_matches[:8],
+            },
+        })
+
+    # Code Quality Enforcement
+    quality_files = ["eslint", "prettier", ".ruff", "pyproject.toml",
+                    "mypy", "flake8", "pylint", "pre-commit",
+                    ".editorconfig", "husky", "lint-staged"]
+    quality_matches = [q for q in quality_files if q in all_files_str]
+    if quality_matches:
+        prof = "advanced" if len(quality_matches) >= 3 else \
+               "intermediate" if len(quality_matches) >= 1 else "beginner"
+        skills.append({
+            "name": "Code Quality Enforcement",
+            "proficiency": prof,
+            "confidence": "high" if len(quality_matches) >= 3 else "medium",
+            "evidence": {"configs_found": quality_matches},
+        })
+
+    # For non-code: completeness and rigor signals
+    if artifact_type not in ("software_project",):
+        rigor_signals = ["citation", "reference", "source", "footnote",
+                        "bibliography", "appendix", "methodology",
+                        "limitation", "future work", "acknowledgment",
+                        "data available", "code available", "reproducible"]
+        rigor_matches = [r for r in rigor_signals if r in combined]
+        if rigor_matches:
+            prof = "advanced" if len(rigor_matches) >= 7 else \
+                   "intermediate" if len(rigor_matches) >= 3 else "beginner"
+            skills.append({
+                "name": "Academic Rigor",
+                "proficiency": prof,
+                "confidence": "high" if len(rigor_matches) >= 6 else
+                              "medium" if len(rigor_matches) >= 3 else "low",
+                "evidence": {"rigor_signals": rigor_matches[:10]},
+            })
+
+    prof_order = {"expert": 4, "advanced": 3, "intermediate": 2, "beginner": 1}
+    skills.sort(key=lambda s: prof_order.get(s["proficiency"], 0), reverse=True)
+    return skills
 
 
-class ConfigDocsDetectorRole(_BaseDetectorRole):
-    """Detect configuration formats, documentation, API specs, and tooling
-    used in a project."""
+class RigorDetectorRole(_BaseDetectorRole):
+    """Detect thoroughness, care, and completeness in the artifact.
 
-    agent_name: str = "configdocs_detector"
-    output_file: str = "configdocs_report.json"
-    domain: str = "Configuration & Documentation"
+    Asks: "How thorough, careful, and complete is the work?"
+    """
 
-    def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+    agent_name: str = "rigor_detector"
+    output_file: str = "rigor_report.json"
+    domain: str = "Depth & Rigor"
+
+    def build_task(self, backend: str, working_dir: str = ".",
+                   project_dir: str = ".",
+                   artifact_analysis: dict[str, Any] | None = None,
                    **context: Any) -> str:
-        """Build the config/docs detection prompt."""
-        scan_summary = _format_scan_summary(project_scan)
+        """Build the depth/rigor detection prompt."""
+        analysis = artifact_analysis or _load_artifact_analysis(working_dir)
+        artifact_type = _get_artifact_type(analysis or {})
+        content_text = _get_content_text(analysis or {})[:4000]
+        files_preview = "\n".join(_get_all_files(analysis or {})[:30])
+        metadata = (analysis or {}).get("metadata", {})
+
+        has_tests = metadata.get("has_tests", False)
+        has_docs = metadata.get("has_docs", False)
+
         common = (
-            f"You are a project configuration & documentation analyst. Your "
-            f"job is to analyze a project directory and identify all "
-            f"configuration formats, documentation types, API specifications, "
-            f"and development tooling in use.\n\n"
-            f"## Project Directory\n{project_dir}\n"
-            f"{scan_summary}"
-            f"## Instructions\n"
-            f"1. The project structure is shown above. "
-            f"Focus your analysis on configuration, documentation, and tooling files.\n"
-            f"2. Analyze for:\n"
-            f"   - **Config formats**: YAML, TOML, JSON, INI, ENV, XML\n"
-            f"   - **Documentation**: README, CONTRIBUTING, CHANGELOG, LICENSE, "
-            f"CODE_OF_CONDUCT, SECURITY, docs/ directory, Wiki\n"
-            f"   - **API specs**: OpenAPI/Swagger, GraphQL schemas, gRPC protobuf, "
-            f"AsyncAPI, JSON Schema, RAML\n"
-            f"   - **Tooling**: EditorConfig, Git config, pre-commit hooks, "
-            f"Husky, commitlint, commitizen, semantic-release, Renovate, "
-            f"Dependabot, Dev Containers, Gitpod, Codespaces\n"
-            f"3. For each finding, determine:\n"
-            f"   - What format/type it is\n"
-            f"   - Which files provide evidence\n"
-            f"   - How comprehensive the configuration is\n\n"
-            f"4. Write findings to `configdocs_report.json`:\n"
+            f"You are a depth and rigor evaluator. Your job is to assess how "
+            f"thorough, careful, and complete the work is.\n\n"
+            f"## Artifact\n"
+            f"**Type**: {artifact_type}\n"
+            f"**Has tests**: {has_tests}  |  **Has docs**: {has_docs}\n"
+            f"Working directory: {working_dir}\n\n"
+            f"### Files\n{files_preview}\n\n"
+            f"### Content Samples\n{content_text[:4000]}\n\n"
+            f"## Task\n"
+            f"1. Read `artifact_analysis.json` from {working_dir}.\n"
+            f"2. Evaluate rigor and thoroughness:\n"
+            f"   - **For software**: testing strategy, test coverage, "
+            f"edge case handling, documentation quality, linting/quality "
+            f"enforcement, error handling patterns.\n"
+            f"   - **For articles/papers**: citations, methodology section, "
+            f"data availability, limitations, editing quality.\n"
+            f"   - **For datasets**: schema documentation, data validation, "
+            f"completeness notes, processing scripts.\n"
+            f"3. What's missing? What would a more thorough version include?\n\n"
+            f"## Output: `{self.output_file}`\n"
             f"```json\n"
             f"{{\n"
-            f'  "domain": "Configuration & Documentation",\n'
-            f'  "config_formats": [\n'
-            f'    {{"format": "YAML", "file_count": 15, '
-            f'"examples": ["docker-compose.yml", ".github/workflows/ci.yml"]}}\n'
-            f'  ],\n'
-            f'  "documentation": [\n'
-            f'    {{"type": "README", "path": "README.md", "size_hint": "5KB", '
-            f'"completeness": "comprehensive"}}\n'
-            f'  ],\n'
-            f'  "api_specs": [\n'
-            f'    {{"type": "OpenAPI", "path": "openapi.yaml", "version_hint": "3.0"}}\n'
-            f'  ],\n'
-            f'  "tooling": [\n'
-            f'    {{"tool": "pre-commit", "config": ".pre-commit-config.yaml"}}\n'
+            f'  "domain": "{self.domain}",\n'
+            f'  "inferred_skills": [\n'
+            f'    {{\n'
+            f'      "name": "<SKILL_NAME>",\n'
+            f'      "proficiency": "advanced|intermediate|beginner|expert",\n'
+            f'      "confidence": "high|medium|low",\n'
+            f'      "evidence": {{\n'
+            f'        "test_count": 25,\n'
+            f'        "description": "Test files cover all major modules"\n'
+            f'      }}\n'
+            f'    }}\n'
             f'  ]\n'
             f"}}\n"
             f"```\n\n"
-            f"Working directory: {working_dir}"
+            f"IMPORTANT: Replace ALL <PLACEHOLDER> values with ACTUAL findings from the artifact. If nothing is found, use empty arrays []. Output TASK_COMPLETE when done."
         )
 
         if backend == "claude_cli":
             backend_note = (
-                "\n\nUse your own knowledge — do NOT search the web. "
-                "Read project_scan.json, analyze files, write "
-                "configdocs_report.json. Output TASK_COMPLETE."
+                "\n\nUse your own knowledge. Read artifact_analysis.json, "
+                f"evaluate rigor, write {self.output_file}. Output TASK_COMPLETE."
             )
         else:
             backend_note = (
-                "\n\nRead project_scan.json, analyze files, write "
-                "configdocs_report.json, output TASK_COMPLETE."
+                f"\n\nRead artifact_analysis.json, evaluate rigor, "
+                f"write {self.output_file}, output TASK_COMPLETE."
             )
 
         return common + backend_note
 
     def _fallback_detect(self, project_dir: str = ".",
                          working_dir: str = ".") -> dict[str, Any]:
-        """Deterministic config/docs detection without LLM."""
-        scan = _load_project_scan(working_dir) or {}
-        categories = scan.get("file_categories", {})
-        all_files = (
-            categories.get("source", []) +
-            categories.get("config", []) +
-            categories.get("docs", []) +
-            categories.get("ci", []) +
-            categories.get("build", []) +
-            categories.get("other", [])
-        )
-        if not all_files:
-            try:
-                r = subprocess.run(
-                    f"find {project_dir} -type f -not -path '*/.git/*' "
-                    f"-not -path '*/node_modules/*' -not -path '*/__pycache__/*' "
-                    f"| head -500",
-                    shell=True, capture_output=True, text=True,
-                    timeout=15, cwd=working_dir,
-                )
-                all_files = [f.strip() for f in r.stdout.strip().split("\n") if f.strip()]
-            except (subprocess.TimeoutExpired, OSError):
-                all_files = []
-
-        # Config formats
-        config_formats: list[dict[str, Any]] = []
-        for fmt_name, extensions in _CONFIG_FORMATS:
-            examples = [
-                f for f in all_files
-                if any(f.endswith(ext) for ext in extensions) or
-                   any(ext in os.path.basename(f) for ext in extensions
-                       if not ext.startswith("."))
-            ][:5]
-            if examples:
-                config_formats.append({
-                    "format": fmt_name,
-                    "file_count": len(examples),
-                    "examples": examples[:3],
-                })
-
-        # Documentation
-        documentation: list[dict[str, Any]] = []
-        for doc_type, indicators in _DOC_TYPES:
-            matched = []
-            for ind in indicators:
-                for fpath in all_files:
-                    bn = os.path.basename(fpath).lower()
-                    path_lower = fpath.lower()
-                    if ind.lower() in bn or ind.lower() in path_lower:
-                        matched.append(fpath)
-            if matched:
-                size_hint = ""
-                try:
-                    fpath_full = os.path.join(working_dir, matched[0])
-                    if os.path.exists(fpath_full):
-                        size = os.path.getsize(fpath_full)
-                        size_hint = f"{size // 1024}KB" if size >= 1024 else f"{size}B"
-                except OSError:
-                    pass
-                completeness = "comprehensive" if len(matched) >= 3 else \
-                               "moderate" if len(matched) >= 2 else "minimal"
-                documentation.append({
-                    "type": doc_type,
-                    "path": matched[0],
-                    "size_hint": size_hint,
-                    "completeness": completeness,
-                })
-
-        # API specs
-        api_specs: list[dict[str, Any]] = []
-        for spec_name, indicators in _API_SPECS:
-            matched = []
-            for ind in indicators:
-                for fpath in all_files:
-                    bn = os.path.basename(fpath).lower()
-                    if ind.lower() in bn or ind.lower() in fpath.lower():
-                        matched.append(fpath)
-            if matched:
-                api_specs.append({
-                    "type": spec_name,
-                    "path": matched[0],
-                    "version_hint": "",
-                })
-
-        # Tooling
-        tooling: list[dict[str, Any]] = []
-        for tool_name, indicators in _TOOLING:
-            matched = []
-            for ind in indicators:
-                for fpath in all_files:
-                    bn = os.path.basename(fpath).lower()
-                    if ind.lower() in bn or ind.lower() in fpath.lower():
-                        matched.append(fpath)
-            if matched:
-                tooling.append({
-                    "tool": tool_name,
-                    "config": matched[0],
-                })
+        analysis = _load_artifact_analysis(working_dir) or {}
+        skills = _detect_rigor_skills(analysis)
 
         return {
-            "domain": "Configuration & Documentation",
-            "config_formats": config_formats,
-            "documentation": documentation,
-            "api_specs": api_specs,
-            "tooling": tooling,
+            "domain": self.domain,
+            "inferred_skills": skills,
+            "detected_tools": [],
             "_fallback": True,
         }

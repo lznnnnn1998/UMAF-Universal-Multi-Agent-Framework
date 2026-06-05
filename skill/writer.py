@@ -2,19 +2,11 @@
 
 import json
 import os
-import sys
 from typing import Any
 
-# Ensure repo root is on sys.path so we can import agent.py and tools.py
-# __file__ is .../coderpp_output/modules/skill_agent_roles/skill/writer.py
-# Repo root is 5 dirs up: .../universal_multi_agent_framework/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from agent import AgentResult, AgentRole  # noqa: E402
-from tools import ToolRegistry  # noqa: E402
+from agent import AgentResult, AgentRole
+from tools import ToolRegistry
+from utils import extract_json_object
 
 
 # Proficiency badge mapping
@@ -82,26 +74,29 @@ class SkillReportWriterRole(AgentRole):
         # Embed inventory summary inline so the writer doesn't need to
         # discover the file from disk.
         inventory_summary = ""
-        if skill_inventory and skill_inventory.get("skills"):
+        if skill_inventory and (skill_inventory.get("tools") or skill_inventory.get("inferred_skills")):
             inv = skill_inventory
             summary = inv.get("summary", {})
-            skills = inv.get("skills", [])
+            tools = inv.get("tools", inv.get("skills", []))
+            skills = inv.get("inferred_skills", [])
             lines = [
                 "\n## Skill Inventory (pre-computed — NO need to read from disk)",
-                f"**Total skills**: {summary.get('total_skills', len(skills))}",
-                f"**Domains**: {', '.join(summary.get('domains_covered', []))}",
+                f"**Tools**: {summary.get('total_tools', len(tools))}",
+                f"**Inferred skills**: {summary.get('total_inferred_skills', len(skills))}",
+                f"**Artifact type**: {inv.get('artifact_type', 'unknown')}",
                 "",
-                "### Skills",
+                "### Tools",
             ]
-            for s in skills[:30]:
-                name = s.get("name", "?")
-                cat = s.get("category", "Other")
-                prof = s.get("proficiency", "beginner")
-                ver = s.get("version_hint", "")
-                ver_str = f" ({ver})" if ver else ""
-                lines.append(f"- **{name}** — {cat} — {prof}{ver_str}")
-            if len(skills) > 30:
-                lines.append(f"  ... and {len(skills) - 30} more skills")
+            for t in tools[:15]:
+                lines.append(f"- **{t.get('name', '?')}** — {t.get('category', 'Other')} — {t.get('proficiency', 'beginner')}")
+            if len(tools) > 15:
+                lines.append(f"  ... and {len(tools) - 15} more tools")
+            lines.append("")
+            lines.append("### Inferred Skills")
+            for s in skills[:15]:
+                lines.append(f"- **{s.get('name', '?')}** — {s.get('category', 'Unknown')} — {s.get('proficiency', 'beginner')} ({s.get('confidence', '?')})")
+            if len(skills) > 15:
+                lines.append(f"  ... and {len(skills) - 15} more skills")
             lines.append("")
             inventory_summary = "\n".join(lines)
 
@@ -111,7 +106,7 @@ class SkillReportWriterRole(AgentRole):
             f"## Project\n{proj}\n"
             f"{inventory_summary}"
             f"## Input\n"
-            f"The skill inventory is summarized above. "
+            f"The skill inventory (tools + inferred skills) is summarized above. "
             f"Read `skill_inventory.json` from the working directory "
             f"({working_dir}) for full details.\n\n"
             f"## Output 1: `skills.json`\n"
@@ -232,44 +227,57 @@ class SkillReportWriterRole(AgentRole):
     @staticmethod
     def _fallback_skills_json(project_name: str,
                               inventory: dict[str, Any]) -> dict[str, Any]:
-        """Build skills.json from inventory data."""
+        """Build skills.json from inventory data (v2: tools + inferred skills)."""
         from datetime import datetime, timezone
 
-        skills = inventory.get("skills", [])
+        tools = inventory.get("tools", inventory.get("skills", []))
+        skills = inventory.get("inferred_skills", [])
         summary = inventory.get("summary", {})
-        cats = summary.get("skill_categories", {})
 
-        # Group by category
+        # Group tools by category
+        tools_by_category: dict[str, list[dict[str, Any]]] = {}
+        for t in tools:
+            cat = t.get("category", "Other")
+            tools_by_category.setdefault(cat, []).append({
+                "name": t.get("name", ""),
+                "proficiency": t.get("proficiency", "beginner"),
+                "evidence": t.get("evidence", []),
+            })
+
+        # Group skills by category
         skills_by_category: dict[str, list[dict[str, Any]]] = {}
         for s in skills:
-            cat = s.get("category", "Other")
+            cat = s.get("category", "Unknown")
             skills_by_category.setdefault(cat, []).append({
                 "name": s.get("name", ""),
                 "proficiency": s.get("proficiency", "beginner"),
-                "evidence": s.get("evidence", []),
-                "version_hint": s.get("version_hint", ""),
+                "confidence": s.get("confidence", "low"),
+                "evidence": s.get("evidence", {}),
             })
-
-        top_cat = max(cats, key=cats.get) if cats else "Other"
 
         return {
             "project": project_name,
+            "artifact_type": inventory.get("artifact_type", "unknown"),
             "generated_at": inventory.get("generated_at",
                 datetime.now(timezone.utc).isoformat()),
             "summary": {
-                "total_skills": summary.get("total_skills", len(skills)),
-                "domains": summary.get("domains_covered", []),
-                "top_category": top_cat,
+                "total_tools": summary.get("total_tools", len(tools)),
+                "total_inferred_skills": summary.get("total_inferred_skills", len(skills)),
+                "dimensions": summary.get("dimensions_covered", []),
                 "proficiency_levels": summary.get("proficiency_distribution", {}),
             },
+            "tools_by_category": tools_by_category,
             "skills_by_category": skills_by_category,
+            "all_tools": [
+                {"name": t.get("name", ""), "category": t.get("category", "Other"),
+                 "proficiency": t.get("proficiency", "beginner"),
+                 "sources": t.get("sources", [])}
+                for t in tools
+            ],
             "all_skills": [
-                {
-                    "name": s.get("name", ""),
-                    "category": s.get("category", "Other"),
-                    "proficiency": s.get("proficiency", "beginner"),
-                    "version": s.get("version_hint", ""),
-                }
+                {"name": s.get("name", ""), "category": s.get("category", "Unknown"),
+                 "proficiency": s.get("proficiency", "beginner"),
+                 "confidence": s.get("confidence", "low")}
                 for s in skills
             ],
             "file_stats": inventory.get("file_stats", {}),
@@ -286,35 +294,39 @@ class SkillReportWriterRole(AgentRole):
     @staticmethod
     def _fallback_report_md(project_name: str, inventory: dict[str, Any],
                             working_dir: str) -> str:
-        """Generate a template-based markdown report from inventory data."""
+        """Generate a markdown report from v2 inventory (tools + inferred skills)."""
         from datetime import datetime, timezone
 
-        skills = inventory.get("skills", [])
+        tools = inventory.get("tools", inventory.get("skills", []))
+        skills = inventory.get("inferred_skills", [])
         summary = inventory.get("summary", {})
         file_stats = inventory.get("file_stats", {})
+        artifact_type = inventory.get("artifact_type", "unknown")
 
-        # Build markdown sections
         lines: list[str] = []
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
         # Title
-        lines.append(f"# 🔬 Skill Summary Report: {project_name}")
+        lines.append(f"# 🔬 Skill Analysis Report: {project_name}")
         lines.append("")
         lines.append(f"**Generated**: {now}")
-        lines.append(f"**Total Skills Detected**: {summary.get('total_skills', len(skills))}")
+        lines.append(f"**Artifact Type**: {artifact_type}")
+        lines.append(f"**Tools Detected**: {summary.get('total_tools', len(tools))}")
+        lines.append(f"**Skills Inferred**: {summary.get('total_inferred_skills', len(skills))}")
         lines.append("")
 
         # Executive Summary
-        lines.append("## 📊 Executive Summary")
+        lines.append("## 📊 Summary")
         lines.append("")
-        domains = summary.get("domains_covered", [])
-        lines.append(f"**Domains Analyzed**: {', '.join(domains) if domains else 'N/A'}")
-        lines.append("")
+        dims = summary.get("dimensions_covered", [])
+        if dims:
+            lines.append(f"**Dimensions Analyzed**: {', '.join(dims)}")
+            lines.append("")
 
         # Proficiency distribution
         prof_dist = summary.get("proficiency_distribution", {})
         if prof_dist:
-            lines.append("### Proficiency Distribution")
+            lines.append("### Proficiency Distribution (tools + skills)")
             lines.append("")
             lines.append("| Level | Count |")
             lines.append("|-------|-------|")
@@ -325,33 +337,46 @@ class SkillReportWriterRole(AgentRole):
                 lines.append(f"| {badge} | {bar} ({count}) |")
             lines.append("")
 
-        # Skills by Category
-        lines.append("## 🏷️ Skills by Category")
-        lines.append("")
-
-        # Group skills
-        by_category: dict[str, list[dict[str, Any]]] = {}
-        for s in skills:
-            cat = s.get("category", "Other")
-            by_category.setdefault(cat, []).append(s)
-
-        for cat in sorted(by_category.keys()):
-            cat_skills = by_category[cat]
-            emoji = _CATEGORY_EMOJI.get(cat, "📌")
-            lines.append(f"### {emoji} {cat} ({len(cat_skills)})")
+        # Detected Tools
+        if tools:
+            lines.append("## 🛠️ Detected Tools")
             lines.append("")
-            lines.append("| Skill | Proficiency | Version | Evidence |")
-            lines.append("|-------|-------------|---------|----------|")
-            for sk in cat_skills:
-                name = sk.get("name", "?")
-                prof = sk.get("proficiency", "beginner")
+            lines.append("| Tool | Category | Proficiency |")
+            lines.append("|------|----------|-------------|")
+            for t in tools[:30]:
+                name = t.get("name", "?")
+                cat = t.get("category", "Other")
+                prof = t.get("proficiency", "beginner")
                 badge = _BADGES.get(prof, prof)
-                ver = sk.get("version_hint", "") or "-"
-                ev = ", ".join(sk.get("evidence", [])[:3]) or "-"
-                if len(ev) > 80:
-                    ev = ev[:77] + "..."
-                lines.append(f"| {name} | {badge} | {ver} | {ev} |")
+                lines.append(f"| {name} | {cat} | {badge} |")
+            if len(tools) > 30:
+                lines.append(f"| ... | {len(tools) - 30} more tools | |")
             lines.append("")
+
+        # Inferred Skills
+        if skills:
+            lines.append("## 🧠 Inferred Developer Skills")
+            lines.append("")
+
+            # Group by category
+            by_category: dict[str, list[dict[str, Any]]] = {}
+            for s in skills:
+                cat = s.get("category", "Unknown")
+                by_category.setdefault(cat, []).append(s)
+
+            for cat in sorted(by_category.keys()):
+                cat_skills = by_category[cat]
+                lines.append(f"### {cat} ({len(cat_skills)})")
+                lines.append("")
+                lines.append("| Skill | Proficiency | Confidence |")
+                lines.append("|-------|-------------|------------|")
+                for sk in cat_skills:
+                    name = sk.get("name", "?")
+                    prof = sk.get("proficiency", "beginner")
+                    conf = sk.get("confidence", "?")
+                    badge = _BADGES.get(prof, prof)
+                    lines.append(f"| {name} | {badge} | {conf} |")
+                lines.append("")
 
         # File Statistics
         if file_stats:
@@ -362,8 +387,6 @@ class SkillReportWriterRole(AgentRole):
             for key, label in [
                 ("total_files", "Total Files"),
                 ("python_files", "Python Files"),
-                ("javascript_files", "JavaScript Files"),
-                ("typescript_files", "TypeScript Files"),
                 ("test_files", "Test Files"),
                 ("config_files", "Configuration Files"),
                 ("doc_files", "Documentation Files"),
@@ -377,29 +400,23 @@ class SkillReportWriterRole(AgentRole):
         lines.append("## 💡 Recommendations")
         lines.append("")
 
-        # Generate recommendations based on proficiency gaps
         has_expert = prof_dist.get("expert", 0) > 0
-        has_advanced = prof_dist.get("advanced", 0) > 0
         beginner_count = prof_dist.get("beginner", 0)
 
         if not has_expert:
-            lines.append("- Consider deepening expertise in key technologies to reach expert level.")
+            lines.append("- No skills at expert level — consider deepening expertise.")
         if beginner_count > 3:
-            lines.append(f"- {beginner_count} skills at beginner level — prioritize learning paths for these areas.")
-        if not file_stats:
-            pass
-        elif file_stats.get("test_files", 0) == 0:
-            lines.append("- ⚠️ No test files detected — consider adding automated testing.")
-        if "Infrastructure" not in str(domains):
-            lines.append("- No infrastructure tooling detected — consider adding Docker or CI/CD.")
-
-        if len([r for r in lines if r.startswith("- ")]) == 0:
-            lines.append("- The project shows a well-rounded skill profile. Continue maintaining and updating dependencies.")
+            lines.append(f"- {beginner_count} entries at beginner level — room for growth.")
+        if not skills:
+            lines.append("- No inferred skills found — may need more content to analyze.")
+        if not tools:
+            lines.append("- No tools detected — may not be a software project.")
 
         lines.append("")
         lines.append("---")
         lines.append("")
-        lines.append("*Report generated by UMAF Skill Summarizer Pipeline.*")
+        lines.append("*Report generated by UMAF Skill Pipeline v2.*")
+        lines.append("")
 
         # Write to disk
         path = os.path.join(working_dir, "skills_report.md")
@@ -407,35 +424,3 @@ class SkillReportWriterRole(AgentRole):
             f.write("\n".join(lines))
 
         return path
-
-    # ── JSON extraction helper ──────────────────────────────────────────
-
-    @staticmethod
-    def _extract_json_object(text: str) -> str | None:
-        """Extract the first complete JSON object from text."""
-        start = text.find('{')
-        if start == -1:
-            return None
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == '\\':
-                escape_next = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-        return None

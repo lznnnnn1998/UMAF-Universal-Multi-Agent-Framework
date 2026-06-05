@@ -53,23 +53,6 @@ class ClaudeConfig:
 _config = ClaudeConfig()
 
 
-def _load_config() -> dict[str, str]:
-    """Load environment variables from the Claude Code config file."""
-    return _config._load()
-
-
-_claude_env = _config.get_env()
-
-
-def get_claude_env() -> dict[str, str]:
-    """Return the env vars to inject when calling the claude CLI.
-
-    These are merged into the subprocess environment so every agent's
-    call to `claude` uses the configured backend (DeepSeek proxy, etc.).
-    """
-    return _config.get_env()
-
-
 def merge_claude_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Return a full env dict: current process env + claude overrides."""
     return _config.merge_env(base_env)

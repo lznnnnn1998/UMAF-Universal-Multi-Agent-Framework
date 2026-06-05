@@ -23,13 +23,12 @@ def _load_tools_config(path: str) -> dict[str, dict[str, list[str]]]:
     Returns the parsed dict suitable for ToolRegistry.set_tool_config().
     Exits with an error message if the file is missing or invalid.
     """
-    config_path = Path(path)
-    if not config_path.exists():
-        print(f"Error: tools config file not found: {config_path}")
-        sys.exit(1)
     try:
-        with open(config_path) as f:
+        with open(path) as f:
             config = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: tools config file not found: {path}")
+        sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"Error: invalid JSON in tools config: {e}")
         sys.exit(1)
@@ -70,15 +69,25 @@ def main():
         help="Skip the decomposition confirmation prompt",
     )
     parser.add_argument(
-        "--tools-config", default=None,
-        help="Path to a JSON file specifying tool overrides per pipeline/role "
-             "(see tools_config.example.json for format)",
+        "--tools-config",
+        default=str(Path(__file__).resolve().parent / "tools_config.json"),
+        help="Path to a JSON file specifying tool overrides per pipeline/role.",
+    )
+    parser.add_argument(
+        "--target", "-t", default=None,
+        help="Directory or file to analyze (skill/feature/topology modes). "
+             "This is WHAT you want to analyze, distinct from --working-dir "
+             "which is WHERE outputs go.",
     )
     args = parser.parse_args()
 
     requirement = args.requirement
     if not requirement:
-        if sys.stdin.isatty():
+        # For skill/topology/feature modes, --target makes the text
+        # requirement optional.
+        if args.target and args.mode in ("skill", "topology", "feature"):
+            requirement = args.target
+        elif sys.stdin.isatty():
             prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement", "feature": "Enter feature description"}
             requirement = input(f"{prompt_map.get(args.mode, 'Enter requirement')}: ").strip()
         else:
@@ -88,11 +97,10 @@ def main():
         print("Error: no requirement/topic provided.")
         sys.exit(1)
 
-    # Apply tool overrides from JSON config before creating the pipeline
-    if args.tools_config:
-        config = _load_tools_config(args.tools_config)
-        ToolRegistry.set_tool_config(config)
-        print(f"Applied tools config: {args.tools_config}")
+    # Load tools config (defaults to tools_config.json in repo root)
+    config = _load_tools_config(args.tools_config)
+    ToolRegistry.set_tool_config(config)
+    print(f"Tools config: {args.tools_config}")
 
     pipeline_cls = PIPELINES[args.mode]
     pipeline = pipeline_cls(
@@ -113,7 +121,7 @@ def main():
         print("Resume: yes")
     print("-" * 50)
 
-    pipeline.run(requirement)
+    pipeline.run(requirement, target_dir=args.target)
 
 
 if __name__ == "__main__":

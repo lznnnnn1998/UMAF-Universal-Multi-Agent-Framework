@@ -1,4 +1,4 @@
-# Universal Multi-Agent Framework (UMAF) v1.6.1
+# Universal Multi-Agent Framework (UMAF) v1.7
 
 LangChain + DeepSeek multi-agent framework with six pipelines and two backends. OOP architecture with 5-layer class hierarchy.
 
@@ -25,10 +25,10 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
                                 ├── TopologyEvaluatorRole
                                 ├── TopologyWriterRole
                                 ├── SkillScannerRole
-                                ├── PythonDetectorRole
-                                ├── JSDetectorRole
-                                ├── InfraDetectorRole
-                                ├── ConfigDocsDetectorRole
+                                ├── DomainExpertiseDetectorRole
+                                ├── TechnicalCraftDetectorRole
+                                ├── MethodologyDetectorRole
+                                ├── RigorDetectorRole
                                 ├── SkillAggregatorRole
                                 └── SkillReportWriterRole
                                 (23 roles total)
@@ -42,8 +42,11 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
 
 Factory: `get_llm(backend)`.
 
-### `tools/` — Seven tools + ToolRegistry
-`read_file`, `write_file`, `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 18+ role-specific methods), `functions.py` (7 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods). `__init__.py` re-exports and auto-applies feature tools — no duplicated tool definitions.
+### `tools/` — Eight tools + ToolRegistry
+`read_file`, `write_file`, `write_lines` (preferred for code — avoids multi-line string escaping), `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 18 role-specific methods, all defaults empty — tools come from config), `functions.py` (8 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods). `__init__.py` re-exports and auto-applies feature tools — no duplicated tool definitions.
+
+### `tools_config.json` — Canonical tool assignments (v1.7)
+Single source of truth for per-role tool assignments. Auto-loaded by `main.py` at startup. Maps pipeline → role → tool list. Also defines per-tool timeout overrides. `--tools-config` flag overrides with a custom file. All `ToolRegistry.*_tools()` methods return `[]` by default — `set_tool_config()` must be called first. Metadata keys (`__about__`, `_description`, etc.) are stripped on load. `__global__` key provides fallback for unlisted roles.
 
 ### `agent.py` — Agent core
 - **`BaseAgent`**: Autonomous agent loop with circuit breakers (force wrap-up, error spiral detection, unknown tool warnings).
@@ -79,13 +82,13 @@ analyzer → designer → evaluator → writer → END
 - **evaluator.py**: `TopologyEvaluatorRole` — scores topologies on 5 dimensions (latency, reliability, cost_efficiency, simplicity, scalability, each 1-10), sorts by total_score descending
 - **writer.py**: `TopologyWriterRole` — writes `topology_spec.json` and `topology_report.md`
 
-**`SkillPipeline`** (v1.5):
+**`SkillPipeline`** (v1.5, v2 detectors):
 ```
 scanner → 4 parallel detectors → aggregator → writer → END
 ```
-- **scanner.py**: `SkillScannerRole` — scans project directory, produces `project_scan.json`
-- **detectors.py**: 4 domain-specific detectors — `PythonDetectorRole`, `JSDetectorRole`, `InfraDetectorRole`, `ConfigDocsDetectorRole` — each reads `project_scan.json`, detects skills in their domain
-- **aggregator.py**: `SkillAggregatorRole` — reads domain report files, deduplicates, categorizes skills
+- **scanner.py**: `SkillScannerRole` — classifies artifact type, deep-reads content, produces `artifact_analysis.json`
+- **detectors.py**: 4 artifact-agnostic detectors — `DomainExpertiseDetectorRole`, `TechnicalCraftDetectorRole`, `MethodologyDetectorRole`, `RigorDetectorRole` — each reads `artifact_analysis.json`, infers skills from evidence
+- **aggregator.py**: `SkillAggregatorRole` — reads domain report files, deduplicates, categorizes skills by universal dimensions
 - **writer.py**: `SkillReportWriterRole` — produces `skills.json` (project, skills_by_category, all_skills) and `skills_report.md`
 
 **`FeaturePipeline`** (v1.6):
@@ -100,8 +103,10 @@ scanner → planner → coder ↔ reviewer (max 5 cycles) → writer → END
 
 ### `main.py` — Entry point
 ```
-python3 main.py [--mode coder|research|coderpp|topology|skill|feature] [--backend deepseek|claude_cli] [--working-dir PATH] "requirement"
+python3 main.py [--mode coder|research|coderpp|topology|skill|feature] [--backend deepseek|claude_cli] [--working-dir PATH] [--tools-config PATH] [--target PATH] [--clean] [--yes] "requirement"
 ```
+- `--tools-config` defaults to `tools_config.json` in repo root
+- `--target` specifies directory/file to analyze (skill/feature/topology modes)
 
 ### `claude_config.py` — Env setup
 Loads `claude_env_sample.json` (12 env vars). Falls back to `.example.json`. `merge_claude_env()` merges with `os.environ`.
@@ -114,8 +119,8 @@ Loads `claude_env_sample.json` (12 env vars). Falls back to `.example.json`. `me
 - `coderpp/`: head_agent, worker_agent, reviewer_agent, organizer (4 agent roles)
 - `topology/`: analyzer, designer, evaluator, writer (4 agent roles)
 - `skill/`: scanner, detectors, aggregator, writer (4 agent roles)
-- `test/`: test_smoke, test_topology, test_skill, test_feature_v2 (97 tests)
-- `utils.py`: shared helpers (extract_json_object, safe_read)
+- `test/`: test_smoke, test_topology, test_skill, test_feature_v2 (99 tests)
+- `utils.py`: shared helpers (extract_json_object, extract_json_array, safe_read, _PROFICIENCY_SCORES)
 
 ## Setup
 
@@ -132,6 +137,7 @@ pip install -r requirements.txt
 - `AgentRole` ABC + `ToolRegistry` centralization (no duplicated tool definitions)
 - Tool metadata + TOOL_MAP separation; explicit `working_dir` (no global state)
 - Tool name translation for Claude CLI (Python names → native names via regex)
+- Tool assignment driven by `tools_config.json` (v1.7): no hardcoded defaults in code; all 18+ role methods return `[]` — `set_tool_config()` is the single source of truth
 - Backend-aware task generation (v1.2): no nested `claude -p` for claude_cli workers
 - **Python >= 3.11**: `X | None` syntax, no deprecated `Optional[X]` or `Union[X, Y]`
 - Fallbacks at every stage; DuckDuckGo Lite (no API key); all agents logged for debugging
@@ -151,6 +157,13 @@ pip install -r requirements.txt
 
 ## Version History
 
+### v1.7 (June 2026) — tools_config.json + Codebase Cleanup
+- **tools_config.json**: Single source of truth for per-role tool assignments. Auto-loaded by `main.py`. `--tools-config` overrides. All `ToolRegistry.*_tools()` defaults changed from hardcoded lists to `[]` — `set_tool_config()` must be called first. Metadata keys stripped on load. `__global__` fallback support.
+- **Code deduplication**: Removed ~200 lines — 5 `_extract_json_object` copies consolidated into `utils.py`, 2 `_extract_json_array` copies moved, 4 `sys.path.insert` hacks removed from `skill/`, `_PROFICIENCY_SCORES` centralized (was 5 inline copies). Added `extract_json_array()` to `utils.py`.
+- **Dead code removal**: `run_agent()`, `BaseAgent._checkpoint_path()`, `_checkpoint_path()` from `agent.py`; `_load_config()`, `_claude_env`, `get_claude_env()` from `claude_config.py`; unused imports from `coderpp/head_agent.py`, `research/head_agent.py`, `pipeline/__init__.py`.
+- **Backend-agnostic tool defaults**: Removed backend-differentiated tool lists in `research_decomposer_tools()`, removed "do NOT search the web" prompt restrictions. Tools are now purely config-driven.
+- **Verified**: 99/99 tests pass.
+
 ### v1.6.1 (June 2026) — Dependency Injection Fixes Across 3 Pipelines
 - **CoderPipeline**: Reviewer was blind to coder output — now receives `coder_files` (files produced by coder, scanned from working directory) via `execute()` and displayed in reviewer prompt as "Files Produced by Coder" section. Added `coder_files: list[str]` to `MultiAgentState`.
 - **SkillPipeline**: Upstream data in LangGraph state never reached downstream agents — detectors, aggregator, and writer all relied on discovering files from disk. Fixed by passing `project_scan`, `detector_outputs`, and `skill_inventory` via `execute()` kwargs, with inline summaries embedded in prompts so agents know what was computed upstream.
@@ -163,7 +176,7 @@ pip install -r requirements.txt
 - **Shared utilities**: `utils.py` — `extract_json_object()` and `safe_read()` used across feature roles.
 - **ToolRegistry**: 5 new feature role classmethods via `feature_tools.py`, auto-applied at import time.
 - **main.py**: 6 modes — coder, research, coderpp, topology, skill, feature.
-- **Verified**: All 6 pipelines pass end-to-end with claude_cli backend. 97 tests pass (42 legacy + 55 feature).
+- **Verified**: All 6 pipelines pass end-to-end with claude_cli backend. 99 tests pass.
 
 ### v1.5 (June 2026) — Topology Optimizer + Skill Summarizer
 - **Topology Optimizer**: 4-node linear graph (analyzer → designer → evaluator → writer). Determines optimal agent topology for any task description. 4 AgentRoles in `topology/`.

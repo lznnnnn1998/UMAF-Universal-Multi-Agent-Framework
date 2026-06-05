@@ -4,6 +4,15 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
+
+from tools import ToolRegistry
+
+# Load tools_config.json so tool methods return configured tools
+_config_path = Path(__file__).resolve().parent.parent / "tools_config.json"
+if _config_path.exists():
+    with open(_config_path) as f:
+        ToolRegistry.set_tool_config(json.load(f))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

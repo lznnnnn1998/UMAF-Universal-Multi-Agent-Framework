@@ -51,7 +51,9 @@ class ToolRegistry:
         """Apply a tool configuration loaded from a JSON file.
 
         The config dict maps pipeline names to role→tool-list dicts.
-        An optional ``__timeouts__`` key sets per-tool timeouts in seconds::
+        Keys starting with ``__`` or ``_`` are treated as metadata/documentation
+        and stripped before storing. An optional ``__timeouts__`` key sets
+        per-tool timeouts in seconds::
 
             {
                 "__timeouts__": {"call_claude": 300, "web_fetch": 30},
@@ -67,12 +69,22 @@ class ToolRegistry:
         suffixes (e.g. "worker" matches ``research_worker_tools``,
         ``coderpp_worker_tools``, and ``writer`` matches ``writer_tools``).
         """
+        # Extract optional __timeouts__ section
         timeout_config = config.pop("__timeouts__", None)
         if isinstance(timeout_config, dict):
             for tool_name, seconds in timeout_config.items():
                 if isinstance(seconds, (int, float)) and seconds > 0:
                     cls._tool_timeouts[tool_name] = int(seconds)
-        cls._tool_overrides = dict(config)
+
+        # Strip metadata/documentation keys (__about__, _description, etc.)
+        # from both top-level pipeline keys and nested role maps.
+        def _is_meta(k: str) -> bool:
+            return k.startswith("_") and k != "__global__"
+
+        cls._tool_overrides = {
+            pk: {rk: rv for rk, rv in pv.items() if not _is_meta(rk)}
+            for pk, pv in config.items() if not _is_meta(pk)
+        }
 
     @classmethod
     def _apply_override(cls, pipeline: str, role: str, defaults: list) -> list:
@@ -141,108 +153,80 @@ class ToolRegistry:
     )
 
     # --- Role-specific tool lists ---
+    # All tools are defined in tools_config.json. Defaults here are empty;
+    # set_tool_config() must be called before any pipeline runs.
 
     @classmethod
     def coder_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
-        return cls._apply_override("coder", "coder", defaults)
+        return cls._apply_override("coder", "coder", [])
 
     @classmethod
     def reviewer_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH]
-        return cls._apply_override("coder", "reviewer", defaults)
+        return cls._apply_override("coder", "reviewer", [])
 
     @classmethod
     def research_decomposer_tools(cls, backend: str = "deepseek") -> list[ToolSpec]:
-        defaults: list[ToolSpec]
-        if backend == "claude_cli":
-            defaults = [cls.READ_FILE]
-        else:
-            defaults = [cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH]
-        return cls._apply_override("research", "decomposer", defaults)
+        return cls._apply_override("research", "decomposer", [])
 
     @classmethod
     def research_worker_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND, cls.CALL_CLAUDE, cls.WEB_SEARCH, cls.WEB_FETCH, cls.DOWNLOAD_FILE]
-        return cls._apply_override("research", "worker", defaults)
+        return cls._apply_override("research", "worker", [])
 
     @classmethod
     def research_reviewer_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WEB_SEARCH, cls.WEB_FETCH]
-        return cls._apply_override("research", "reviewer", defaults)
+        return cls._apply_override("research", "reviewer", [])
 
     @classmethod
     def writer_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES]
-        return cls._apply_override("research", "writer", defaults)
+        return cls._apply_override("research", "writer", [])
 
     @classmethod
     def coderpp_decomposer_tools(cls, backend: str = "deepseek") -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
-        return cls._apply_override("coderpp", "decomposer", defaults)
+        return cls._apply_override("coderpp", "decomposer", [])
 
     @classmethod
     def coderpp_worker_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
-        return cls._apply_override("coderpp", "worker", defaults)
+        return cls._apply_override("coderpp", "worker", [])
 
     @classmethod
     def coderpp_reviewer_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
-        return cls._apply_override("coderpp", "reviewer", defaults)
+        return cls._apply_override("coderpp", "reviewer", [])
 
     @classmethod
     def organizer_tools(cls) -> list[ToolSpec]:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
-        return cls._apply_override("coderpp", "organizer", defaults)
+        return cls._apply_override("coderpp", "organizer", [])
 
     @classmethod
     def topology_analyzer_tools(cls) -> list[ToolSpec]:
-        """Tools for TopologyAnalyzerRole: reads input spec, writes analysis."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE]
-        return cls._apply_override("topology", "analyzer", defaults)
+        return cls._apply_override("topology", "analyzer", [])
 
     @classmethod
     def topology_designer_tools(cls) -> list[ToolSpec]:
-        """Tools for TopologyDesignerRole: reads complexity factors, writes candidates."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE]
-        return cls._apply_override("topology", "designer", defaults)
+        return cls._apply_override("topology", "designer", [])
 
     @classmethod
     def topology_evaluator_tools(cls) -> list[ToolSpec]:
-        """Tools for TopologyEvaluatorRole: reads candidate topologies, writes scores."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE]
-        return cls._apply_override("topology", "evaluator", defaults)
+        return cls._apply_override("topology", "evaluator", [])
 
     @classmethod
     def topology_writer_tools(cls) -> list[ToolSpec]:
-        """Tools for TopologyWriterRole: writes final spec and report files."""
-        defaults = [cls.WRITE_FILE]
-        return cls._apply_override("topology", "writer", defaults)
+        return cls._apply_override("topology", "writer", [])
 
     @classmethod
     def skill_scanner_tools(cls) -> list[ToolSpec]:
-        """Tools for SkillScannerRole: scans project directory."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
-        return cls._apply_override("skill", "scanner", defaults)
+        return cls._apply_override("skill", "scanner", [])
 
     @classmethod
     def skill_detector_tools(cls) -> list[ToolSpec]:
-        """Tools for domain detector roles: reads project_scan.json, writes report."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
-        return cls._apply_override("skill", "detector", defaults)
+        return cls._apply_override("skill", "detector", [])
 
     @classmethod
     def skill_aggregator_tools(cls) -> list[ToolSpec]:
-        """Tools for SkillAggregatorRole: reads domain reports, deduplicates, writes inventory."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE]
-        return cls._apply_override("skill", "aggregator", defaults)
+        return cls._apply_override("skill", "aggregator", [])
 
     @classmethod
     def skill_writer_tools(cls) -> list[ToolSpec]:
-        """Tools for SkillReportWriterRole: writes skills.json and skills_report.md."""
-        defaults = [cls.READ_FILE, cls.WRITE_FILE]
-        return cls._apply_override("skill", "writer", defaults)
+        return cls._apply_override("skill", "writer", [])
 
     @classmethod
     def to_dicts(cls, specs: list[ToolSpec]) -> list[dict[str, Any]]:

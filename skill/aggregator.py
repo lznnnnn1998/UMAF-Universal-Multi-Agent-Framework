@@ -2,19 +2,11 @@
 
 import json
 import os
-import sys
 from typing import Any
 
-# Ensure repo root is on sys.path so we can import agent.py and tools.py
-# __file__ is .../coderpp_output/modules/skill_agent_roles/skill/aggregator.py
-# Repo root is 5 dirs up: .../universal_multi_agent_framework/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from agent import AgentResult, AgentRole  # noqa: E402
-from tools import ToolRegistry  # noqa: E402
+from agent import AgentResult, AgentRole
+from tools import ToolRegistry
+from utils import extract_json_object, _PROFICIENCY_SCORES
 
 
 # Category mapping for normalization
@@ -42,21 +34,12 @@ _CATEGORY_MAP: dict[str, str] = {
     "other": "Other",
 }
 
-# Proficiency scoring for conflict resolution
-_PROFICIENCY_SCORES: dict[str, int] = {
-    "expert": 4,
-    "advanced": 3,
-    "intermediate": 2,
-    "beginner": 1,
-}
-
-
 class SkillAggregatorRole(AgentRole):
-    """Read 4 domain reports, deduplicate entries, resolve proficiency levels,
+    """Read 4 skill-dimension reports, deduplicate entries, resolve proficiency,
     categorize skills, and write ``skill_inventory.json``.
 
-    The aggregator is the central orchestrator that combines the outputs of
-    the four domain detectors into a single coherent skill inventory.
+    v2: handles both ``detected_tools`` AND ``inferred_skills`` from the
+    4 new detectors (Domain Expertise, Technical Craft, Methodology, Rigor).
     """
 
     agent_name: str = "skill_aggregator"
@@ -90,13 +73,15 @@ class SkillAggregatorRole(AgentRole):
                 output_file = d.get("output_file", "")
                 summary = d.get("summary", "")
                 data = d.get("data", {})
-                skills = data.get("skills", [])
+                tools = data.get("detected_tools", data.get("skills", []))
+                inferred = data.get("inferred_skills", [])
                 skill_preview = ""
-                if skills:
-                    names = [s.get("name", "?") for s in skills[:10]]
-                    skill_preview = f"\n   Skills: {', '.join(names)}"
-                    if len(skills) > 10:
-                        skill_preview += f" ... (+{len(skills) - 10} more)"
+                if inferred:
+                    names = [s.get("name", "?") for s in inferred[:8]]
+                    skill_preview = f"\n   Inferred: {', '.join(names)}"
+                if tools:
+                    tnames = [t.get("name", "?") for t in tools[:5]]
+                    skill_preview += f"\n   Tools: {', '.join(tnames)}"
                 mark = "✓" if output_file else "✗"
                 lines.append(f"- **{mark} {domain}** — {summary}{skill_preview}")
             lines.append("")
@@ -107,83 +92,53 @@ class SkillAggregatorRole(AgentRole):
             f"domain-specific reports and combine them into a unified skill "
             f"inventory.\n\n"
             f"## Input Files (in working directory: {working_dir})\n"
-            f"1. `python_report.json` — Python ecosystem skills\n"
-            f"2. `javascript_report.json` — JavaScript ecosystem skills\n"
-            f"3. `infrastructure_report.json` — Infrastructure & DevOps skills\n"
-            f"4. `configdocs_report.json` — Configuration, docs, API specs\n"
+            f"1. `domain_expertise_report.json` — Specialized domain knowledge\n"
+            f"2. `technical_craft_report.json` — Craft skills in the medium\n"
+            f"3. `methodology_report.json` — Tools, workflows, processes\n"
+            f"4. `rigor_report.json` — Thoroughness, testing, documentation\n"
             f"{detector_summary}"
             f"## Task\n"
             f"1. Read all four report files for full details.\n"
-            f"2. **Deduplicate**: If the same skill appears in multiple reports "
-            f"(e.g., \"Docker\" may appear in both infra and config), keep the "
-            f"one with higher proficiency and add a `sources` field listing "
-            f"the originating domains.\n"
-            f"3. **Resolve proficiency**: When the same skill has conflicting "
-            f"proficiency levels across domains, use the HIGHEST level found "
-            f"and note the conflict.\n"
-            f"4. **Categorize**: Map each skill to one of these top-level "
-            f"categories:\n"
-            f"   - Languages & Runtimes\n"
-            f"   - Web Frameworks\n"
-            f"   - Frontend\n"
-            f"   - Backend\n"
-            f"   - Testing\n"
-            f"   - Code Quality\n"
-            f"   - Data Science & ML\n"
-            f"   - Build & Tooling\n"
-            f"   - Containerization\n"
-            f"   - Orchestration\n"
-            f"   - CI/CD\n"
-            f"   - Cloud\n"
-            f"   - Infrastructure as Code\n"
-            f"   - Monitoring & Observability\n"
-            f"   - Web Servers\n"
-            f"   - Databases\n"
-            f"   - Documentation\n"
-            f"   - Configuration Management\n"
-            f"   - API Specifications\n"
-            f"   - Other\n"
-            f"5. **Count files**: Compute summary statistics from the project "
-            f"scan (total files, language breakdown, test files).\n\n"
-            f"6. Write the unified inventory to `skill_inventory.json`:\n"
+            f"2. Each report has BOTH `detected_tools` AND `inferred_skills`. "
+            f"Merge them separately.\n"
+            f"3. **Deduplicate tools**: same tool in multiple reports → keep "
+            f"highest proficiency, merge sources.\n"
+            f"4. **Deduplicate skills**: same skill name in multiple reports → "
+            f"keep highest proficiency and confidence, merge evidence.\n"
+            f"5. **Categorize**: Map each entry to a top-level category. "
+            f"Tools → Languages & Runtimes, Testing, Web Frameworks, etc. "
+            f"Skills → Domain Knowledge, Technical Craft, Engineering Practice, "
+            f"Quality Assurance, Architecture.\n"
+            f"6. **Count files**: Compute summary stats from the project scan.\n\n"
+            f"7. Write `skill_inventory.json`:\n"
             f"```json\n"
             f"{{\n"
             f'  "project_dir": ".",\n'
+            f'  "artifact_type": "software_project|research_paper|...",\n'
             f'  "generated_at": "<ISO timestamp>",\n'
             f'  "summary": {{\n'
-            f'    "total_skills": <int>,\n'
-            f'    "domains_covered": ["Python", "JavaScript", ...],\n'
-            f'    "skill_categories": {{\n'
-            f'      "Web Frameworks": 3,\n'
-            f'      "Testing": 2,\n'
-            f'      ...\n'
-            f'    }},\n'
+            f'    "total_tools": <int>,\n'
+            f'    "total_inferred_skills": <int>,\n'
+            f'    "dimensions_covered": ["Domain Expertise", "Technical Craft", ...],\n'
             f'    "proficiency_distribution": {{\n'
-            f'      "expert": 0,\n'
-            f'      "advanced": 5,\n'
-            f'      "intermediate": 3,\n'
-            f'      "beginner": 2\n'
+            f'      "expert": 0, "advanced": 5, "intermediate": 3, "beginner": 2\n'
             f'    }}\n'
             f'  }},\n'
-            f'  "skills": [\n'
+            f'  "tools": [\n'
             f'    {{\n'
-            f'      "name": "Python",\n'
-            f'      "category": "Languages & Runtimes",\n'
-            f'      "proficiency": "advanced",\n'
-            f'      "sources": ["Python"],\n'
-            f'      "evidence": [".python-version", "setup.py"],\n'
-            f'      "version_hint": "3.11"\n'
+            f'      "name": "Python", "category": "Languages & Runtimes",\n'
+            f'      "proficiency": "advanced", "sources": ["Methodology"],\n'
+            f'      "evidence": [".python-version", "pyproject.toml"]\n'
             f'    }}\n'
             f'  ],\n'
-            f'  "file_stats": {{\n'
-            f'    "total_files": 150,\n'
-            f'    "python_files": 45,\n'
-            f'    "javascript_files": 20,\n'
-            f'    "typescript_files": 10,\n'
-            f'    "test_files": 25,\n'
-            f'    "config_files": 30,\n'
-            f'    "doc_files": 15\n'
-            f'  }}\n'
+            f'  "inferred_skills": [\n'
+            f'    {{\n'
+            f'      "name": "Design Patterns", "category": "Technical Craft",\n'
+            f'      "proficiency": "advanced", "confidence": "high",\n'
+            f'      "sources": ["Technical Craft"],\n'
+            f'      "evidence": {{"description": "..."}}\n'
+            f'    }}\n'
+            f'  ]\n'
             f"}}\n"
             f"```\n\n"
             f"IMPORTANT: Write the JSON file to `skill_inventory.json`, then "
@@ -214,7 +169,7 @@ class SkillAggregatorRole(AgentRole):
         # 1. Agent response
         for msg in reversed(result.messages):
             content = msg.content if hasattr(msg, "content") else str(msg)
-            json_str = self._extract_json_object(content)
+            json_str = extract_json_object(content)
             if json_str:
                 try:
                     parsed = json.loads(json_str)
@@ -247,20 +202,21 @@ class SkillAggregatorRole(AgentRole):
     @staticmethod
     def _fallback_aggregator(project_dir: str = ".",
                              working_dir: str = ".") -> dict[str, Any]:
-        """Rule-based deduplication and categorization from domain reports.
+        """Rule-based deduplication and categorization from skill-dimension reports.
 
-        Reads the four domain report JSON files from disk and performs
-        deterministic merging without LLM.
+        Reads the four new detector report files from disk and performs
+        deterministic merging without LLM. Handles both detected_tools
+        and inferred_skills from each report.
         """
         from datetime import datetime, timezone
 
         # Load domain reports
         reports: dict[str, dict[str, Any]] = {}
         for fname, domain_key in [
-            ("python_report.json", "Python"),
-            ("javascript_report.json", "JavaScript"),
-            ("infrastructure_report.json", "Infrastructure"),
-            ("configdocs_report.json", "Configuration & Documentation"),
+            ("domain_expertise_report.json", "Domain Expertise"),
+            ("technical_craft_report.json", "Technical Craft"),
+            ("methodology_report.json", "Methodology & Tooling"),
+            ("rigor_report.json", "Depth & Rigor"),
         ]:
             path = os.path.join(working_dir, fname)
             if os.path.exists(path):
@@ -270,142 +226,120 @@ class SkillAggregatorRole(AgentRole):
                 except (json.JSONDecodeError, OSError):
                     pass
 
-        # Merge skills with deduplication
-        seen: dict[str, dict[str, Any]] = {}
+        # ── Merge tools ───────────────────────────────────────────────
+        tools_seen: dict[str, dict[str, Any]] = {}
         for domain, report in reports.items():
-            for skill in report.get("skills", []):
+            for tool in report.get("detected_tools", []):
+                name = tool.get("name", "")
+                if not name:
+                    continue
+                if name in tools_seen:
+                    existing = tools_seen[name]
+                    new_prof = _PROFICIENCY_SCORES.get(
+                        tool.get("proficiency", "beginner"), 1)
+                    old_prof = _PROFICIENCY_SCORES.get(
+                        existing.get("proficiency", "beginner"), 1)
+                    if new_prof > old_prof:
+                        existing["proficiency"] = tool.get("proficiency")
+                    if domain not in existing.get("sources", []):
+                        existing["sources"].append(domain)
+                    ex_ev = existing.get("evidence", [])
+                    if isinstance(ex_ev, list):
+                        ex_ev.extend(tool.get("evidence", []))
+                        existing["evidence"] = list(set(ex_ev))[:10]
+                else:
+                    tool_copy = dict(tool)
+                    tool_copy["sources"] = [domain]
+                    raw_cat = tool_copy.get("category", "Other Tools")
+                    tool_copy["category"] = _CATEGORY_MAP.get(raw_cat, raw_cat)
+                    tools_seen[name] = tool_copy
+
+        tools_list = sorted(tools_seen.values(), key=lambda s: (
+            _PROFICIENCY_SCORES.get(s.get("proficiency", "beginner"), 1),
+            s.get("name", ""),
+        ), reverse=True)
+
+        # ── Merge inferred skills ─────────────────────────────────────
+        skills_seen: dict[str, dict[str, Any]] = {}
+        _SKILL_CATEGORY_MAP: dict[str, str] = {
+            "algorithm_design": "Technical Craft",
+            "design_patterns": "Technical Craft",
+            "error_handling": "Technical Craft",
+            "type_system": "Technical Craft",
+            "code_organization": "Technical Craft",
+            "performance": "Technical Craft",
+            "security": "Technical Craft",
+            "argumentation": "Technical Craft",
+            "technical_writing": "Technical Craft",
+            "narrative_structure": "Technical Craft",
+            "clarity": "Technical Craft",
+            "git_workflow": "Engineering Practice",
+            "ci_cd": "Engineering Practice",
+            "dependency_management": "Engineering Practice",
+            "environment_management": "Engineering Practice",
+            "release_management": "Engineering Practice",
+            "incremental_development": "Engineering Practice",
+            "testing_strategy": "Quality Assurance",
+            "test_coverage": "Quality Assurance",
+            "documentation_quality": "Quality Assurance",
+            "code_quality_enforcement": "Quality Assurance",
+            "academic_rigor": "Quality Assurance",
+            "monitoring": "Quality Assurance",
+            "component_design": "Architecture",
+            "api_design": "Architecture",
+            "data_modeling": "Architecture",
+            "scalability": "Architecture",
+            "infrastructure_design": "Architecture",
+        }
+
+        for domain, report in reports.items():
+            for skill in report.get("inferred_skills", []):
                 name = skill.get("name", "")
                 if not name:
                     continue
-
-                if name in seen:
-                    # Resolve proficiency: keep the highest
-                    existing = seen[name]
+                if name in skills_seen:
+                    existing = skills_seen[name]
                     new_prof = _PROFICIENCY_SCORES.get(
                         skill.get("proficiency", "beginner"), 1)
                     old_prof = _PROFICIENCY_SCORES.get(
                         existing.get("proficiency", "beginner"), 1)
                     if new_prof > old_prof:
                         existing["proficiency"] = skill.get("proficiency")
-                    # Merge sources
+                        existing["confidence"] = skill.get("confidence", "medium")
                     if domain not in existing.get("sources", []):
                         existing["sources"].append(domain)
-                    # Merge evidence
-                    existing_evidence = set(existing.get("evidence", []))
-                    existing_evidence.update(skill.get("evidence", []))
-                    existing["evidence"] = sorted(existing_evidence)
                 else:
                     skill_copy = dict(skill)
                     skill_copy["sources"] = [domain]
-                    # Normalize category
-                    raw_cat = skill_copy.get("category", "other")
-                    skill_copy["category"] = _CATEGORY_MAP.get(raw_cat, raw_cat)
-                    seen[name] = skill_copy
+                    skill_key = name.lower().replace(" ", "_")
+                    cat = _SKILL_CATEGORY_MAP.get(skill_key, domain)
+                    skill_copy["category"] = cat
+                    skills_seen[name] = skill_copy
 
-        # Add language/runtime entries
-        if "Python" in reports:
-            py_ver = reports["Python"].get("version", {}).get("detected", "unknown")
-            if py_ver and py_ver != "unknown":
-                seen["Python"] = {
-                    "name": "Python",
-                    "category": "Languages & Runtimes",
-                    "proficiency": "advanced" if reports["Python"].get("total_python_files", 0) > 20
-                        else "intermediate",
-                    "sources": ["Python"],
-                    "evidence": [f"Version {py_ver}"],
-                    "version_hint": py_ver,
-                }
-
-        if "JavaScript" in reports:
-            js_report = reports["JavaScript"]
-            js_ver = js_report.get("runtime", {}).get("detected", "unknown")
-            if js_ver and js_ver != "unknown":
-                seen["Node.js"] = {
-                    "name": "Node.js",
-                    "category": "Languages & Runtimes",
-                    "proficiency": "advanced" if js_report.get("total_js_files", 0) > 20
-                        else "intermediate",
-                    "sources": ["JavaScript"],
-                    "evidence": [f"Version {js_ver}"],
-                    "version_hint": js_ver,
-                }
-            if js_report.get("typescript", {}).get("used"):
-                seen["TypeScript"] = {
-                    "name": "TypeScript",
-                    "category": "Languages & Runtimes",
-                    "proficiency": "advanced" if js_report.get("total_ts_files", 0) > 20
-                        else "intermediate",
-                    "sources": ["JavaScript"],
-                    "evidence": js_report.get("typescript", {}).get("config", "tsconfig.json"),
-                    "version_hint": "",
-                }
-
-        # Add config/docs entries
-        if "Configuration & Documentation" in reports:
-            cd_report = reports["Configuration & Documentation"]
-            for fmt in cd_report.get("config_formats", []):
-                name = f"{fmt['format']} Configuration"
-                if name not in seen:
-                    seen[name] = {
-                        "name": name,
-                        "category": "Configuration Management",
-                        "proficiency": "advanced" if fmt.get("file_count", 0) > 10
-                            else "intermediate",
-                        "sources": ["Configuration & Documentation"],
-                        "evidence": fmt.get("examples", []),
-                        "version_hint": "",
-                    }
-            for doc in cd_report.get("documentation", []):
-                name = doc.get("type", "Documentation")
-                if name not in seen:
-                    seen[f"Documentation: {name}"] = {
-                        "name": f"Documentation: {name}",
-                        "category": "Documentation",
-                        "proficiency": "advanced" if doc.get("completeness") == "comprehensive"
-                            else "intermediate",
-                        "sources": ["Configuration & Documentation"],
-                        "evidence": [doc.get("path", "")],
-                        "version_hint": "",
-                    }
-            for spec in cd_report.get("api_specs", []):
-                name = spec.get("type", "")
-                if name and name not in seen:
-                    seen[name] = {
-                        "name": name,
-                        "category": "API Specifications",
-                        "proficiency": "intermediate",
-                        "sources": ["Configuration & Documentation"],
-                        "evidence": [spec.get("path", "")],
-                        "version_hint": spec.get("version_hint", ""),
-                    }
-            for tool in cd_report.get("tooling", []):
-                name = tool.get("tool", "")
-                if name and name not in seen:
-                    seen[name] = {
-                        "name": name,
-                        "category": "Build & Tooling",
-                        "proficiency": "intermediate",
-                        "sources": ["Configuration & Documentation"],
-                        "evidence": [tool.get("config", "")],
-                        "version_hint": "",
-                    }
-
-        skills_list = sorted(seen.values(), key=lambda s: (
+        skills_list = sorted(skills_seen.values(), key=lambda s: (
             _PROFICIENCY_SCORES.get(s.get("proficiency", "beginner"), 1),
             s.get("name", ""),
         ), reverse=True)
 
-        # Build summary
-        categories_count: dict[str, int] = {}
+        # ── Build summary ─────────────────────────────────────────────
         prof_dist: dict[str, int] = {"expert": 0, "advanced": 0, "intermediate": 0, "beginner": 0}
-        for s in skills_list:
-            cat = s.get("category", "Other")
-            categories_count[cat] = categories_count.get(cat, 0) + 1
-            prof = s.get("proficiency", "beginner")
+        for entry in tools_list + skills_list:
+            prof = entry.get("proficiency", "beginner")
             if prof in prof_dist:
                 prof_dist[prof] += 1
 
-        domains_covered = list(reports.keys())
+        dimensions = list(reports.keys())
+
+        # Artifact type from artifact_analysis.json
+        artifact_type = "unknown"
+        aa_path = os.path.join(working_dir, "artifact_analysis.json")
+        if os.path.exists(aa_path):
+            try:
+                with open(aa_path) as f:
+                    aa = json.load(f)
+                artifact_type = aa.get("artifact_type", {}).get("type", "unknown")
+            except (json.JSONDecodeError, OSError):
+                pass
 
         # File stats from project_scan
         file_stats: dict[str, int] = {}
@@ -432,46 +366,16 @@ class SkillAggregatorRole(AgentRole):
 
         return {
             "project_dir": project_dir,
+            "artifact_type": artifact_type,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary": {
-                "total_skills": len(skills_list),
-                "domains_covered": domains_covered,
-                "skill_categories": categories_count,
+                "total_tools": len(tools_list),
+                "total_inferred_skills": len(skills_list),
+                "dimensions_covered": dimensions,
                 "proficiency_distribution": prof_dist,
             },
-            "skills": skills_list,
+            "tools": tools_list,
+            "inferred_skills": skills_list,
             "file_stats": file_stats,
             "_fallback": True,
         }
-
-    # ── JSON extraction helper ──────────────────────────────────────────
-
-    @staticmethod
-    def _extract_json_object(text: str) -> str | None:
-        """Extract the first complete JSON object from text."""
-        start = text.find('{')
-        if start == -1:
-            return None
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == '\\':
-                escape_next = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-        return None

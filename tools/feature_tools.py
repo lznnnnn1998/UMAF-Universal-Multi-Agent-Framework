@@ -43,28 +43,23 @@ def apply_to_tool_registry(tool_registry: type) -> type:
 
     @classmethod
     def feature_scanner_tools(cls) -> list:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.RUN_COMMAND]
-        return cls._apply_override("feature", "scanner", defaults)
+        return cls._apply_override("feature", "scanner", [])
 
     @classmethod
     def feature_planner_tools(cls) -> list:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE]
-        return cls._apply_override("feature", "planner", defaults)
+        return cls._apply_override("feature", "planner", [])
 
     @classmethod
     def feature_coder_tools(cls) -> list:
-        defaults = [cls.READ_FILE, cls.WRITE_FILE, cls.WRITE_LINES, cls.RUN_COMMAND]
-        return cls._apply_override("feature", "coder", defaults)
+        return cls._apply_override("feature", "coder", [])
 
     @classmethod
     def feature_reviewer_tools(cls) -> list:
-        defaults = [cls.READ_FILE, cls.RUN_COMMAND]
-        return cls._apply_override("feature", "reviewer", defaults)
+        return cls._apply_override("feature", "reviewer", [])
 
     @classmethod
     def feature_writer_tools(cls) -> list:
-        defaults = [cls.WRITE_FILE]
-        return cls._apply_override("feature", "writer", defaults)
+        return cls._apply_override("feature", "writer", [])
 
     cls.feature_scanner_tools = feature_scanner_tools
     cls.feature_planner_tools = feature_planner_tools

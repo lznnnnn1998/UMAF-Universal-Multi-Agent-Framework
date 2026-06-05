@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from agent import AgentResult, AgentRole, BaseDecomposerRole
-from tools import TOOL_MAP, ToolRegistry
+from tools import ToolRegistry
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -124,15 +124,6 @@ class CoderPPDecomposerRole(BaseDecomposerRole):
         return ["decomposition.json", "module_decomposition.json"]
 
     def _backend_instructions(self, backend: str) -> str:
-        if backend == "claude_cli":
-            return (
-                "Use your own knowledge to design the module architecture — do "
-                "NOT search the web. If a .tex file was provided in the requirement, "
-                "read it first to extract implementation ideas from the 'Future Work' "
-                "and 'Optimizations' sections. Complete BOTH phases: output the JSON "
-                "decomposition array first, then set up the environment with "
-                "requirements.txt and pip install. End with TASK_COMPLETE."
-            )
         return (
             "If the requirement references a .tex file, read it first to extract "
             "implementation-relevant sections (especially 'Future Work' and "

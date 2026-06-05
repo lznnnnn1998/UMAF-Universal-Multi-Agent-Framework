@@ -1,9 +1,18 @@
-"""Smoke tests for Skill Summarizer pipeline — agent roles, state, pipeline, and fallbacks."""
+"""Smoke tests for Skill Summarizer Pipeline v2 — artifact-agnostic skill detection."""
 
 import json
 import os
 import sys
 import tempfile
+from pathlib import Path
+
+from tools import ToolRegistry
+
+# Load tools_config.json so tool methods return configured tools
+_config_path = Path(__file__).resolve().parent.parent / "tools_config.json"
+if _config_path.exists():
+    with open(_config_path) as f:
+        ToolRegistry.set_tool_config(json.load(f))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -12,8 +21,8 @@ import tempfile
 
 def test_imports():
     from skill.scanner import SkillScannerRole
-    from skill.detectors import (PythonDetectorRole, JSDetectorRole,
-                                  InfraDetectorRole, ConfigDocsDetectorRole)
+    from skill.detectors import (DomainExpertiseDetectorRole, TechnicalCraftDetectorRole,
+                                  MethodologyDetectorRole, RigorDetectorRole)
     from skill.aggregator import SkillAggregatorRole
     from skill.writer import SkillReportWriterRole
     from pipeline import SkillPipeline, SkillState
@@ -26,17 +35,17 @@ def test_imports():
 
 def test_agent_roles_instantiate():
     from skill.scanner import SkillScannerRole
-    from skill.detectors import (PythonDetectorRole, JSDetectorRole,
-                                  InfraDetectorRole, ConfigDocsDetectorRole)
+    from skill.detectors import (DomainExpertiseDetectorRole, TechnicalCraftDetectorRole,
+                                  MethodologyDetectorRole, RigorDetectorRole)
     from skill.aggregator import SkillAggregatorRole
     from skill.writer import SkillReportWriterRole
 
     roles = [
-        (SkillScannerRole(), "skill_scanner", 8),
-        (PythonDetectorRole(), "python_detector", 12),
-        (JSDetectorRole(), "js_detector", 12),
-        (InfraDetectorRole(), "infra_detector", 12),
-        (ConfigDocsDetectorRole(), "configdocs_detector", 12),
+        (SkillScannerRole(), "skill_scanner", 15),
+        (DomainExpertiseDetectorRole(), "domain_expertise_detector", 12),
+        (TechnicalCraftDetectorRole(), "technical_craft_detector", 12),
+        (MethodologyDetectorRole(), "methodology_detector", 12),
+        (RigorDetectorRole(), "rigor_detector", 12),
         (SkillAggregatorRole(), "skill_aggregator", 10),
         (SkillReportWriterRole(), "skill_report_writer", 8),
     ]
@@ -52,14 +61,14 @@ def test_agent_roles_instantiate():
 
 def test_tools_for_backend():
     from skill.scanner import SkillScannerRole
-    from skill.detectors import (PythonDetectorRole, JSDetectorRole,
-                                  InfraDetectorRole, ConfigDocsDetectorRole)
+    from skill.detectors import (DomainExpertiseDetectorRole, TechnicalCraftDetectorRole,
+                                  MethodologyDetectorRole, RigorDetectorRole)
     from skill.aggregator import SkillAggregatorRole
     from skill.writer import SkillReportWriterRole
 
-    for role_cls in [SkillScannerRole, PythonDetectorRole, JSDetectorRole,
-                     InfraDetectorRole, ConfigDocsDetectorRole,
-                     SkillAggregatorRole, SkillReportWriterRole]:
+    for role_cls in [SkillScannerRole, DomainExpertiseDetectorRole,
+                     TechnicalCraftDetectorRole, MethodologyDetectorRole,
+                     RigorDetectorRole, SkillAggregatorRole, SkillReportWriterRole]:
         role = role_cls()
         for backend in ["deepseek", "claude_cli"]:
             tools = role.tools_for_backend(backend)
@@ -77,7 +86,8 @@ def test_state_keys():
 
     required_keys = {
         "input_spec", "working_dir", "backend",
-        "project_scan", "detector_outputs", "skill_inventory", "status",
+        "project_scan", "artifact_analysis", "detector_outputs",
+        "skill_inventory", "status",
     }
     actual_keys = set(SkillState.__annotations__.keys())
     assert required_keys <= actual_keys, f"Missing keys: {required_keys - actual_keys}"
@@ -127,6 +137,7 @@ def test_build_initial_state():
         assert state["working_dir"] == tmpdir
         assert state["backend"] == "claude_cli"
         assert state["project_scan"] == {}
+        assert state["artifact_analysis"] == {}
         assert state["detector_outputs"] == []
         assert state["skill_inventory"] == {}
         assert state["status"] == "initialized"
@@ -134,22 +145,21 @@ def test_build_initial_state():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Test 8: Fallback scanner
+# Test 8: Fallback scanner — surface scan (backward compatible)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_fallback_scanner():
-    """_fallback_scanner produces a valid project scan dict."""
+    """_fallback_surface_scan produces a valid project scan dict."""
     from skill.scanner import SkillScannerRole
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create a few files to scan
         os.makedirs(os.path.join(tmpdir, "src"))
         with open(os.path.join(tmpdir, "src", "main.py"), "w") as f:
             f.write("print('hello')")
         with open(os.path.join(tmpdir, "README.md"), "w") as f:
             f.write("# Test")
 
-        scan = SkillScannerRole._fallback_scanner(project_dir=tmpdir, working_dir=tmpdir)
+        scan = SkillScannerRole._fallback_surface_scan(project_dir=tmpdir, working_dir=tmpdir)
         assert "file_categories" in scan
         assert "total_files" in scan
         assert scan["total_files"] >= 2
@@ -158,135 +168,226 @@ def test_fallback_scanner():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Test 9: Fallback detection
+# Test 9: Deep scan fallback
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_python_fallback_detect():
-    """PythonDetector._fallback_detect scans a project for Python ecosystem skills."""
-    from skill.detectors import PythonDetectorRole
+def test_deep_scanner():
+    """_fallback_deep_scanner produces artifact analysis with classification."""
+    from skill.scanner import SkillScannerRole
 
     with tempfile.TemporaryDirectory() as tmpdir:
         os.makedirs(os.path.join(tmpdir, "src"))
-        with open(os.path.join(tmpdir, "requirements.txt"), "w") as f:
-            f.write("numpy>=1.21.0\npandas>=1.3.0\n")
-        with open(os.path.join(tmpdir, "setup.py"), "w") as f:
-            f.write("from setuptools import setup\nsetup(name='test')")
-        # Create project_scan.json that _load_project_scan reads
-        scan = {"total_files": 2, "file_categories": {"source": [], "config": ["requirements.txt", "setup.py"]}}
-        with open(os.path.join(tmpdir, "project_scan.json"), "w") as f:
-            json.dump(scan, f)
+        with open(os.path.join(tmpdir, "src", "main.py"), "w") as f:
+            f.write("import numpy as np\n\ndef train_model(data):\n    return np.mean(data)\n")
+        with open(os.path.join(tmpdir, "README.md"), "w") as f:
+            f.write("# ML Project\nA machine learning project.")
+        with open(os.path.join(tmpdir, "pyproject.toml"), "w") as f:
+            f.write("[project]\nname = 'ml-project'\n")
 
-        role = PythonDetectorRole()
-        result = role._fallback_detect(project_dir=tmpdir, working_dir=tmpdir)
-        assert "skills" in result
-        assert "domain" in result
-        assert result["domain"] == "Python"
-        skills = result["skills"]
-        names = [s["name"] for s in skills]
-        # Should detect at least numpy and pandas
-        has_package = any("numpy" in name.lower() or "pandas" in name.lower() for name in names)
-        print(f"  PASS test_python_fallback_detect ({len(skills)} skills: {', '.join(names[:5])}{' — numpy/pandas found' if has_package else ''})")
+        analysis = SkillScannerRole._fallback_deep_scanner(project_dir=tmpdir, working_dir=tmpdir)
+
+        # Check structure
+        assert "artifact_type" in analysis
+        assert "content_samples" in analysis
+        assert "structure" in analysis
+        assert "metadata" in analysis
+        assert "surface_scan" in analysis
+
+        # Check artifact classification
+        at = analysis["artifact_type"]
+        assert "type" in at
+        assert at["type"] in ("software_project", "unknown")
+        assert "confidence" in at
+
+        # Check content sampling read actual files
+        samples = analysis.get("content_samples", {})
+        assert len(samples) > 0, "Should have read at least one file"
+
+        # Check metadata
+        meta = analysis["metadata"]
+        assert meta.get("has_docs", False)
+
+        print(f"  PASS test_deep_scanner (type: {at['type']}, "
+              f"confidence: {at['confidence']}, samples: {len(samples)})")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Test 10: Domain Expertise fallback detect
+# ═══════════════════════════════════════════════════════════════════════════
 
-def test_js_fallback_detect():
-    """JSDetector._fallback_detect scans for JS ecosystem skills."""
-    from skill.detectors import JSDetectorRole
+def test_domain_expertise_fallback_detect():
+    """DomainExpertiseDetector._fallback_detect infers domain knowledge."""
+    from skill.detectors import DomainExpertiseDetectorRole
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        with open(os.path.join(tmpdir, "package.json"), "w") as f:
-            json.dump({"dependencies": {"react": "^18.0.0", "next": "^13.0.0"}}, f)
-        # Create project_scan.json
-        scan = {"total_files": 1, "file_categories": {"source": [], "config": ["package.json"]}}
-        with open(os.path.join(tmpdir, "project_scan.json"), "w") as f:
-            json.dump(scan, f)
+        # Create artifact_analysis.json with ML content
+        analysis = {
+            "artifact_type": {"type": "software_project", "confidence": "high"},
+            "content_samples": {
+                "src/model.py": "import torch\nimport torch.nn as nn\n"
+                               "class Transformer(nn.Module):\n"
+                               "    def __init__(self):\n"
+                               "        self.attention = nn.MultiheadAttention(512, 8)\n"
+                               "        self.dropout = nn.Dropout(0.1)\n",
+            },
+            "surface_scan": {"file_categories": {"source": ["src/model.py"]}},
+        }
+        with open(os.path.join(tmpdir, "artifact_analysis.json"), "w") as f:
+            json.dump(analysis, f)
 
-        role = JSDetectorRole()
+        role = DomainExpertiseDetectorRole()
         result = role._fallback_detect(project_dir=tmpdir, working_dir=tmpdir)
-        assert "skills" in result
-        assert result["domain"] == "JavaScript"
-        skills = result["skills"]
-        assert len(skills) >= 1
+        assert "domain" in result
+        assert result["domain"] == "Domain Expertise"
+        assert "inferred_skills" in result
+        skills = result["inferred_skills"]
         names = [s["name"] for s in skills]
-        print(f"  PASS test_js_fallback_detect ({len(skills)} skills: {', '.join(names[:5])})")
+        print(f"  PASS test_domain_expertise_fallback_detect "
+              f"({len(skills)} skills: {', '.join(names[:5]) if names else 'none'})")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Test 11: Fallback aggregation
+# Test 11: Methodology fallback detect
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_methodology_fallback_detect():
+    """MethodologyDetector._fallback_detect detects tools and workflows."""
+    from skill.detectors import MethodologyDetectorRole
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        analysis = {
+            "artifact_type": {"type": "software_project", "confidence": "high"},
+            "content_samples": {},
+            "surface_scan": {
+                "file_categories": {
+                    "source": ["src/app.py", "src/models.py"],
+                    "config": ["pyproject.toml", "package.json"],
+                    "ci": [".github/workflows/ci.yml"],
+                    "test": ["tests/test_app.py"],
+                }
+            },
+        }
+        with open(os.path.join(tmpdir, "artifact_analysis.json"), "w") as f:
+            json.dump(analysis, f)
+
+        role = MethodologyDetectorRole()
+        result = role._fallback_detect(project_dir=tmpdir, working_dir=tmpdir)
+        assert "domain" in result
+        assert result["domain"] == "Methodology & Tooling"
+        assert "detected_tools" in result
+        assert "inferred_skills" in result
+        tools = result["detected_tools"]
+        skills = result["inferred_skills"]
+        print(f"  PASS test_methodology_fallback_detect "
+              f"({len(tools)} tools, {len(skills)} skills)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Test 12: Fallback aggregation
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_fallback_aggregator():
-    """_fallback_aggregator deduplicates and categorizes skills."""
+    """_fallback_aggregator deduplicates tools and inferred skills."""
     from skill.aggregator import SkillAggregatorRole
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create domain report files that the aggregator reads from disk
-        with open(os.path.join(tmpdir, "python_report.json"), "w") as f:
-            json.dump({"domain": "Python", "skills": [
-                {"name": "flask", "category": "frameworks", "proficiency": "used", "evidence": ["reqs.txt"]},
-                {"name": "pytest", "category": "testing", "proficiency": "used", "evidence": ["reqs.txt"]},
-            ]}, f)
+        # Write new-format detector reports
+        with open(os.path.join(tmpdir, "domain_expertise_report.json"), "w") as f:
+            json.dump({
+                "domain": "Domain Expertise",
+                "inferred_skills": [
+                    {"name": "Machine Learning", "proficiency": "advanced",
+                     "confidence": "high", "evidence": {"signal_matches": ["transformer"]}},
+                ],
+                "detected_tools": [
+                    {"name": "PyTorch", "category": "ML framework", "proficiency": "advanced"},
+                ],
+            }, f)
+
+        with open(os.path.join(tmpdir, "methodology_report.json"), "w") as f:
+            json.dump({
+                "domain": "Methodology & Tooling",
+                "inferred_skills": [
+                    {"name": "Git Workflow Maturity", "proficiency": "intermediate",
+                     "confidence": "medium"},
+                ],
+                "detected_tools": [
+                    {"name": "Git", "category": "Version Control", "proficiency": "advanced"},
+                    {"name": "GitHub Actions", "category": "CI/CD", "proficiency": "intermediate"},
+                ],
+            }, f)
 
         result = SkillAggregatorRole._fallback_aggregator(project_dir=tmpdir, working_dir=tmpdir)
-        assert "skills" in result
+        assert "tools" in result
+        assert "inferred_skills" in result
         assert "summary" in result
         s = result["summary"]
-        assert s.get("total_skills", 0) > 0, "Should detect at least one skill"
-        print(f"  PASS test_fallback_aggregator ({s.get('total_skills', 0)} skills)")
+        assert s.get("total_tools", 0) > 0
+        print(f"  PASS test_fallback_aggregator "
+              f"({s.get('total_tools', 0)} tools, {s.get('total_inferred_skills', 0)} skills)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Test 12: Fallback writer
+# Test 13: Fallback writer (v2 format)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_fallback_writer():
-    """Writer fallback produces valid skills.json and skills_report.md."""
+    """Writer fallback handles v2 inventory (tools + inferred_skills)."""
     from skill.writer import SkillReportWriterRole
 
     with tempfile.TemporaryDirectory() as tmpdir:
         inventory = {
-            "skills": [
-                {"name": "Python", "category": "languages", "proficiency": "extensively-used", "evidence": "85% of files"},
-                {"name": "Flask", "category": "frameworks", "proficiency": "used", "evidence": "Found in requirements.txt"},
-                {"name": "Docker", "category": "tools", "proficiency": "detected", "evidence": "Dockerfile present"},
+            "artifact_type": "software_project",
+            "tools": [
+                {"name": "Python", "category": "Languages & Runtimes", "proficiency": "advanced", "sources": ["Methodology"]},
+                {"name": "Docker", "category": "Containers", "proficiency": "intermediate", "sources": ["Methodology"]},
             ],
-            "summary": {"total_skills": 3, "domains_covered": ["python", "infrastructure"]},
+            "inferred_skills": [
+                {"name": "Design Patterns", "category": "Technical Craft",
+                 "proficiency": "advanced", "confidence": "high",
+                 "evidence": {"description": "Factory pattern in models.py"}},
+            ],
+            "summary": {
+                "total_tools": 2, "total_inferred_skills": 1,
+                "dimensions_covered": ["Domain Expertise", "Technical Craft"],
+                "proficiency_distribution": {"expert": 0, "advanced": 2, "intermediate": 1, "beginner": 0},
+            },
         }
 
         skills_data = SkillReportWriterRole._fallback_skills_json("TestProject", inventory)
         SkillReportWriterRole._write_skills_json(tmpdir, skills_data)
         SkillReportWriterRole._fallback_report_md("TestProject", inventory, tmpdir)
 
-        # Verify files exist
         json_path = os.path.join(tmpdir, "skills.json")
         md_path = os.path.join(tmpdir, "skills_report.md")
         assert os.path.exists(json_path), "skills.json should exist"
         assert os.path.exists(md_path), "skills_report.md should exist"
 
-        # Verify JSON structure
         with open(json_path) as f:
             data = json.load(f)
-        assert data.get("project") == "TestProject" or data.get("project_name") == "TestProject"
-        all_skills = data.get("all_skills", data.get("skills", []))
-        assert len(all_skills) == 3
+        assert data.get("project") == "TestProject"
+        assert data.get("artifact_type") == "software_project"
+        all_tools = data.get("all_tools", [])
+        all_skills = data.get("all_skills", [])
+        assert len(all_tools) == 2
+        assert len(all_skills) == 1
 
-        # Verify markdown structure
         with open(md_path) as f:
             md = f.read()
-        assert "# Skill Inventory" in md or "Skill" in md
         assert "TestProject" in md
+        assert "Design Patterns" in md or "Skill" in md
         print(f"  PASS test_fallback_writer ({os.path.getsize(json_path)}B JSON, {os.path.getsize(md_path)}B MD)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Test 13: E2E fallback chain (no LLM calls)
+# Test 14: E2E fallback chain (no LLM calls)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_e2e_fallback_chain():
-    """Full fallback chain: scan → detect → aggregate → write."""
+    """Full fallback chain: deep scan → 4 detects → aggregate → write."""
     from skill.scanner import SkillScannerRole
-    from skill.detectors import PythonDetectorRole
+    from skill.detectors import (DomainExpertiseDetectorRole, TechnicalCraftDetectorRole,
+                                  MethodologyDetectorRole, RigorDetectorRole)
     from skill.aggregator import SkillAggregatorRole
     from skill.writer import SkillReportWriterRole
 
@@ -294,46 +395,122 @@ def test_e2e_fallback_chain():
         # Create a realistic mini-project
         os.makedirs(os.path.join(tmpdir, "src"))
         with open(os.path.join(tmpdir, "src", "app.py"), "w") as f:
-            f.write("import flask\nfrom sqlalchemy import create_engine\n")
-        with open(os.path.join(tmpdir, "requirements.txt"), "w") as f:
-            f.write("flask>=2.0\nsqlalchemy>=1.4\npytest>=7.0\n")
-        with open(os.path.join(tmpdir, "Dockerfile"), "w") as f:
-            f.write("FROM python:3.11\nCOPY . /app\n")
+            f.write("import flask\nfrom sqlalchemy import create_engine\n\n"
+                    "class UserService:\n"
+                    "    def __init__(self, db):\n"
+                    "        self.db = db\n"
+                    "    def get_user(self, user_id: int) -> dict | None:\n"
+                    "        try:\n"
+                    "            return self.db.query(user_id)\n"
+                    "        except Exception as e:\n"
+                    "            logging.error(f'Failed: {e}')\n"
+                    "            return None\n")
+        os.makedirs(os.path.join(tmpdir, "tests"), exist_ok=True)
+        with open(os.path.join(tmpdir, "tests", "test_app.py"), "w") as f:
+            f.write("import pytest\nfrom src.app import UserService\n\n"
+                    "def test_get_user():\n"
+                    "    db = Mock()\n"
+                    "    svc = UserService(db)\n"
+                    "    assert svc.get_user(1) is not None\n")
+        with open(os.path.join(tmpdir, "pyproject.toml"), "w") as f:
+            f.write("[project]\nname='mini-project'\n"
+                    "[tool.pytest.ini_options]\ntestpaths=['tests']\n")
         with open(os.path.join(tmpdir, "README.md"), "w") as f:
-            f.write("# My Project\nA sample project.\n")
+            f.write("# Mini Project\nA sample project with tests and config.\n")
 
-        # 1. Scan
-        scan = SkillScannerRole._fallback_scanner(project_dir=tmpdir, working_dir=tmpdir)
-        assert scan["total_files"] >= 4
+        # 1. Deep scan
+        analysis = SkillScannerRole._fallback_deep_scanner(project_dir=tmpdir, working_dir=tmpdir)
+        assert "artifact_type" in analysis
 
-        # 2. Detect (Python) — write project_scan.json first for _load_project_scan
-        scan_path = os.path.join(tmpdir, "project_scan.json")
-        with open(scan_path, "w") as f:
-            json.dump(scan, f)
-        role = PythonDetectorRole()
-        py_report = role._fallback_detect(project_dir=tmpdir, working_dir=tmpdir)
-        skills = py_report.get("skills", [])
-        skill_names = [s["name"] for s in skills]
-        print(f"  Detected skills: {skill_names}")
+        # 2. Run all 4 detectors
+        detector_classes = [
+            DomainExpertiseDetectorRole,
+            TechnicalCraftDetectorRole,
+            MethodologyDetectorRole,
+            RigorDetectorRole,
+        ]
+        detector_results = []
+        for dc in detector_classes:
+            role = dc()
+            result = role._fallback_detect(project_dir=tmpdir, working_dir=tmpdir)
+            detector_results.append(result)
+            # Write report so aggregator can read it
+            with open(os.path.join(tmpdir, role.output_file), "w") as f:
+                json.dump(result, f)
 
-        # 3. Write domain report so aggregator can read it
-        with open(os.path.join(tmpdir, "python_report.json"), "w") as f:
-            json.dump(py_report, f)
+        # Verify each detector produced valid output
+        for dr in detector_results:
+            assert "domain" in dr
+            has_data = dr.get("inferred_skills") or dr.get("detected_tools")
+            print(f"    {dr['domain']}: {len(dr.get('inferred_skills', []))} skills, "
+                  f"{len(dr.get('detected_tools', []))} tools"
+                  f"{' (has data)' if has_data else ''}")
 
-        # 4. Aggregate
+        # 3. Aggregate
         inventory = SkillAggregatorRole._fallback_aggregator(project_dir=tmpdir, working_dir=tmpdir)
-        assert inventory["summary"]["total_skills"] > 0
+        assert inventory.get("tools") or inventory.get("inferred_skills"), \
+            "Should have tools or inferred skills"
 
-        # 5. Write
-        skills_data = SkillReportWriterRole._fallback_skills_json("TestProject", inventory)
+        # 4. Write
+        skills_data = SkillReportWriterRole._fallback_skills_json("MiniProject", inventory)
         SkillReportWriterRole._write_skills_json(tmpdir, skills_data)
-        SkillReportWriterRole._fallback_report_md("TestProject", inventory, tmpdir)
+        SkillReportWriterRole._fallback_report_md("MiniProject", inventory, tmpdir)
 
         assert os.path.exists(os.path.join(tmpdir, "skills.json"))
         assert os.path.exists(os.path.join(tmpdir, "skills_report.md"))
 
-        total = inventory["summary"]["total_skills"]
-        print(f"  PASS test_e2e_fallback_chain ({total} skills detected)")
+        summary = inventory.get("summary", {})
+        print(f"  PASS test_e2e_fallback_chain "
+              f"({summary.get('total_tools', 0)} tools, "
+              f"{summary.get('total_inferred_skills', 0)} skills, "
+              f"dimensions: {summary.get('dimensions_covered', [])})")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Test 15: parse_result extracts JSON from Write tool-call parameters
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_parse_result_from_write_tool_call():
+    """parse_result extracts and validates JSON embedded in Write tool calls."""
+    from skill.detectors import RigorDetectorRole
+    from unittest.mock import MagicMock
+
+    report_json = json.dumps({
+        "domain": "Depth & Rigor",
+        "inferred_skills": [
+            {"name": "Testing Strategy", "proficiency": "intermediate",
+             "confidence": "high", "evidence": {"test_count": 97}},
+            {"name": "Fallback & Resilience Design", "proficiency": "advanced",
+             "confidence": "high", "evidence": {"fallback_count": 13}},
+        ],
+        "detected_tools": [],
+    })
+
+    write_params = json.dumps({
+        "file_path": "/tmp/skill_output/rigor_report.json",
+        "content": report_json,
+    })
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        role = RigorDetectorRole()
+        role.output_file = "rigor_report.json"
+
+        # Simulate: AI messages have no raw JSON, only Write tool call has it
+        ai_msg = MagicMock()
+        ai_msg.content = "Now I'll write the report. TASK_COMPLETE"
+
+        tool_msg = MagicMock()
+        tool_msg.content = f"[tool_call: Write {write_params}]"
+
+        result = MagicMock()
+        result.messages = [ai_msg, tool_msg]
+
+        # Should extract from Write tool call params, not fallback
+        report = role.parse_result(result, working_dir=tmpdir, project_dir=".")
+        assert len(report.get("inferred_skills", [])) == 2
+        assert report["inferred_skills"][0]["name"] == "Testing Strategy"
+        assert report.get("_fallback") != True
+        print("  PASS test_parse_result_from_write_tool_call")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -341,7 +518,7 @@ def test_e2e_fallback_chain():
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("Skill Summarizer — Smoke Tests")
+    print("Skill Summarizer v2 — Smoke Tests")
     print("=" * 50)
 
     tests = [
@@ -353,11 +530,13 @@ if __name__ == "__main__":
         test_decompose_returns_empty,
         test_build_initial_state,
         test_fallback_scanner,
-        test_python_fallback_detect,
-        test_js_fallback_detect,
+        test_deep_scanner,
+        test_domain_expertise_fallback_detect,
+        test_methodology_fallback_detect,
         test_fallback_aggregator,
         test_fallback_writer,
         test_e2e_fallback_chain,
+        test_parse_result_from_write_tool_call,
     ]
 
     failed = 0

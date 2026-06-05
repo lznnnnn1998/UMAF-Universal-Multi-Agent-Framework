@@ -18,10 +18,11 @@ from .base import BasePipeline
 
 
 class FeatureState(TypedDict, total=False):
-    """State for the Feature Pipeline v2 — 12 fields."""
+    """State for the Feature Pipeline v2 — 13 fields."""
     input_spec: str
     working_dir: str
     backend: str
+    project_dir: str
     status: str
     iteration: int
     project_context: dict[str, Any]
@@ -46,10 +47,13 @@ class FeaturePipeline(BasePipeline):
 
     def _build_initial_state(self, input_spec: str,
                              sub_tasks: list[dict]) -> FeatureState:
+        target = getattr(self, "target_dir", None)
+        project_dir = target or "."
         return {
             "input_spec": input_spec,
             "working_dir": self.working_dir,
             "backend": self.backend,
+            "project_dir": project_dir,
             "status": "initialized",
             "iteration": 0,
             "project_context": {},
@@ -73,15 +77,17 @@ class FeaturePipeline(BasePipeline):
 
         # ── Node: scanner ──────────────────────────────────────────────────
         def _scanner_node(state: FeatureState) -> dict:
-            print("\n[scanner] Analyzing project...")
+            project_dir = state.get("project_dir", ".")
+            print(f"\n[scanner] Analyzing project ({project_dir})...")
+            wd = state.get("working_dir", working_dir)
             result = scanner_role.execute(
-                working_dir=state.get("working_dir", working_dir),
+                working_dir=wd,
                 backend=state.get("backend", backend),
-                project_dir=".",
+                project_dir=project_dir,
             )
             ctx = result if isinstance(result, dict) else {}
             if not ctx:
-                ctx = scanner_role._fallback_scanner(".", state.get("working_dir", working_dir))
+                ctx = scanner_role._fallback_scanner(project_dir, wd)
             print(f"  [scanner] Found {ctx.get('total_files', '?')} files, "
                   f"language={ctx.get('language', '?')}")
             return {"project_context": ctx, "status": "scanned"}

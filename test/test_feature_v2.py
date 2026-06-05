@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +17,14 @@ from feature.planner import FeaturePlannerRole
 from feature.coder import FeatureCoderRole
 from feature.reviewer import FeatureReviewerRole
 from feature.writer import FeatureReportWriterRole
+from tools import ToolRegistry
 from utils import extract_json_object, safe_read
+
+# Load tools_config.json so tool methods return configured tools
+_config_path = Path(__file__).resolve().parent.parent / "tools_config.json"
+if _config_path.exists():
+    with open(_config_path) as f:
+        ToolRegistry.set_tool_config(json.load(f))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -131,8 +131,16 @@ class BasePipeline:
 
     # --- Lifecycle ---
 
-    def run(self, input_spec: str):
-        """Full pipeline run: manage dir → confirm → graph.invoke → print."""
+    def run(self, input_spec: str, target_dir: str | None = None):
+        """Full pipeline run: manage dir → confirm → graph.invoke → print.
+
+        Args:
+            input_spec: The task requirement or topic.
+            target_dir: Directory to analyze (skill/feature/topology modes).
+                        This is WHAT you analyze, distinct from working_dir
+                        which is WHERE outputs go.
+        """
+        self.target_dir = target_dir
         self.manage_output_dir()
 
         # Resume branch: try to reconstruct state from disk

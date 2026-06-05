@@ -1,11 +1,20 @@
 """Smoke tests for UMAF v1.4 — validates bug fixes and core logic without API calls."""
 
+import json
 import os
 import sys
-import json
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
+
+from tools import ToolRegistry
+
+# Load tools_config.json so tool methods return configured tools
+_config_path = Path(__file__).resolve().parent.parent / "tools_config.json"
+if _config_path.exists():
+    with open(_config_path) as f:
+        ToolRegistry.set_tool_config(json.load(f))
 
 # ---------------------------------------------------------------------------
 # Test 1: Imports and basic instantiation

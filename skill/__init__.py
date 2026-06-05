@@ -1,31 +1,39 @@
-"""Public API for the skill summarizer agent roles.
+"""Public API for the Skill Summarizer Pipeline v2.
 
-Seven AgentRole subclasses implementing the Skill Summarizer Pipeline:
-- SkillScannerRole: Scans project directory structure
-- PythonDetectorRole: Detects Python ecosystem skills
-- JSDetectorRole: Detects JavaScript/Node.js ecosystem skills
-- InfraDetectorRole: Detects infrastructure & DevOps skills
-- ConfigDocsDetectorRole: Detects config, docs, and API spec skills
-- SkillAggregatorRole: Aggregates and deduplicates domain reports
-- SkillReportWriterRole: Produces structured output and markdown report
+Seven AgentRole subclasses implementing artifact-agnostic skill detection:
+
+Scanner:
+- SkillScannerRole: Artifact classification + deep content reading
+
+Detectors (4 skill dimensions):
+- DomainExpertiseDetectorRole: What specialized knowledge is demonstrated?
+- TechnicalCraftDetectorRole: How skilled is the creator at the medium?
+- MethodologyDetectorRole: What tools, workflows, and processes are evident?
+- RigorDetectorRole: How thorough, careful, and complete is the work?
+
+Aggregator:
+- SkillAggregatorRole: Merges tools + inferred skills, deduplicates
+
+Writer:
+- SkillReportWriterRole: Produces skills.json + skills_report.md
 """
 
 from skill.scanner import SkillScannerRole
 from skill.detectors import (
-    ConfigDocsDetectorRole,
-    InfraDetectorRole,
-    JSDetectorRole,
-    PythonDetectorRole,
+    DomainExpertiseDetectorRole,
+    MethodologyDetectorRole,
+    RigorDetectorRole,
+    TechnicalCraftDetectorRole,
 )
 from skill.aggregator import SkillAggregatorRole
 from skill.writer import SkillReportWriterRole
 
 __all__ = [
     "SkillScannerRole",
-    "PythonDetectorRole",
-    "JSDetectorRole",
-    "InfraDetectorRole",
-    "ConfigDocsDetectorRole",
+    "DomainExpertiseDetectorRole",
+    "TechnicalCraftDetectorRole",
+    "MethodologyDetectorRole",
+    "RigorDetectorRole",
     "SkillAggregatorRole",
     "SkillReportWriterRole",
 ]

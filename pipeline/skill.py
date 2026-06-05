@@ -9,34 +9,34 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from skill.scanner import SkillScannerRole
-from skill.detectors import (ConfigDocsDetectorRole, InfraDetectorRole,
-                              JSDetectorRole, PythonDetectorRole)
+from skill.detectors import (DomainExpertiseDetectorRole, MethodologyDetectorRole,
+                              RigorDetectorRole, TechnicalCraftDetectorRole)
 from skill.aggregator import SkillAggregatorRole
 from skill.writer import SkillReportWriterRole
 from .base import BasePipeline
 
 
 _DETECTOR_CLASSES: dict[str, type] = {
-    "Python": PythonDetectorRole,
-    "JavaScript": JSDetectorRole,
-    "Infrastructure": InfraDetectorRole,
-    "Configuration & Documentation": ConfigDocsDetectorRole,
+    "Domain Expertise": DomainExpertiseDetectorRole,
+    "Technical Craft": TechnicalCraftDetectorRole,
+    "Methodology & Tooling": MethodologyDetectorRole,
+    "Depth & Rigor": RigorDetectorRole,
 }
 
 _DETECTOR_OUTPUT_FILES: dict[str, str] = {
-    "Python": "python_report.json",
-    "JavaScript": "javascript_report.json",
-    "Infrastructure": "infrastructure_report.json",
-    "Configuration & Documentation": "configdocs_report.json",
+    "Domain Expertise": "domain_expertise_report.json",
+    "Technical Craft": "technical_craft_report.json",
+    "Methodology & Tooling": "methodology_report.json",
+    "Depth & Rigor": "rigor_report.json",
 }
 
 
 def _run_detector(item: dict[str, Any], working_dir: str, backend: str) -> dict[str, Any]:
-    """Execute a single domain detector with LLM + fallback to deterministic scan."""
+    """Execute a single skill-dimension detector with LLM + fallback."""
     domain = item.get("domain", "")
     detector_cls = _DETECTOR_CLASSES.get(domain)
     output_file = _DETECTOR_OUTPUT_FILES.get(domain, "")
-    project_scan = item.get("project_scan", {})
+    artifact_analysis = item.get("artifact_analysis", {})
 
     if detector_cls is None:
         return {"output_file": "", "domain": domain, "data": {},
@@ -46,7 +46,7 @@ def _run_detector(item: dict[str, Any], working_dir: str, backend: str) -> dict[
         role = detector_cls()
         try:
             report = role.execute(working_dir=working_dir, backend=backend,
-                                  project_dir=".", project_scan=project_scan)
+                                  project_dir=".", artifact_analysis=artifact_analysis)
         except Exception:
             report = {}
 
@@ -57,11 +57,17 @@ def _run_detector(item: dict[str, Any], working_dir: str, backend: str) -> dict[
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2, default=str)
 
-        skill_count = len(report.get("skills", []))
+        tool_count = len(report.get("detected_tools", []))
+        skill_count = len(report.get("inferred_skills", []))
+        parts = []
+        if tool_count:
+            parts.append(f"{tool_count} tools")
+        if skill_count:
+            parts.append(f"{skill_count} skills")
+        summary = f"Detected {', '.join(parts)}" if parts else f"No skills detected"
         return {
             "output_file": output_file, "domain": domain, "data": report,
-            "summary": f"Detected {skill_count} skills in the {domain} domain" if skill_count
-            else f"No skills detected in the {domain} domain",
+            "summary": summary,
             "files": [output_file],
         }
     except Exception as exc:
@@ -73,7 +79,9 @@ class SkillState(TypedDict):
     input_spec: str
     working_dir: str
     backend: str
+    project_dir: str
     project_scan: dict[str, Any]
+    artifact_analysis: dict[str, Any]
     detector_outputs: list[dict[str, Any]]
     skill_inventory: dict[str, Any]
     status: str
@@ -96,9 +104,14 @@ class SkillPipeline(BasePipeline):
         print(f"Backend: {self.backend}")
 
     def _build_initial_state(self, input_spec: str, sub_tasks: list[dict]) -> dict:
+        # target_dir is the explicit --target argument; fall back to input_spec (requirement)
+        target = getattr(self, "target_dir", None)
+        project_dir = target or input_spec
         return {
             "input_spec": input_spec, "working_dir": self.working_dir,
-            "backend": self.backend, "project_scan": {},
+            "backend": self.backend, "project_dir": project_dir,
+            "project_scan": {},
+            "artifact_analysis": {},
             "detector_outputs": [], "skill_inventory": {},
             "status": "initialized",
         }
@@ -108,48 +121,56 @@ class SkillPipeline(BasePipeline):
         backend = self.backend
 
         def _scanner_node(state: SkillState) -> dict:
-            print("\n[scanner] Analyzing project directory structure...")
-            project_dir = state.get("input_spec", "")
-            existing = state.get("project_scan", {})
-            if existing and existing.get("file_categories"):
-                n = existing.get("total_files", "?")
-                print(f"  [scanner] Using existing scan ({n} files)")
+            print("\n[scanner] Analyzing artifact (classification + deep read)...")
+            project_dir = state.get("project_dir") or state.get("input_spec", "")
+            print(f"  Target directory: {project_dir}")
+            existing_aa = state.get("artifact_analysis", {})
+
+            # If we already have a deep analysis, skip
+            if existing_aa and existing_aa.get("artifact_type"):
+                at = existing_aa.get("artifact_type", {})
+                print(f"  [scanner] Using existing analysis (type: {at.get('type', '?')})")
                 return {"status": "scanned"}
 
-            scan: dict[str, Any] = {}
+            analysis: dict[str, Any] = {}
             try:
                 role = SkillScannerRole()
-                scan = role.execute(working_dir=working_dir, backend=state.get("backend", backend),
-                                    project_dir=project_dir)
+                analysis = role.execute(working_dir=working_dir,
+                                        backend=state.get("backend", backend),
+                                        project_dir=project_dir)
             except Exception as exc:
                 print(f"  [scanner] Agent error: {exc}")
 
-            if not scan or not scan.get("file_categories"):
-                print("  [scanner] Falling back to deterministic scanner...")
-                scan = SkillScannerRole._fallback_scanner(project_dir=project_dir, working_dir=working_dir)
-                scan_path = os.path.join(working_dir, "project_scan.json")
-                try:
-                    with open(scan_path, "w") as f:
-                        json.dump(scan, f, indent=2, default=str)
-                except OSError:
-                    pass
+            if not analysis or not analysis.get("artifact_type"):
+                print("  [scanner] Falling back to deterministic analysis...")
+                analysis = SkillScannerRole._fallback_deep_scanner(
+                    project_dir=project_dir, working_dir=working_dir)
 
-            total = scan.get("total_files", 0)
-            print(f"  [scanner] Found {total} files")
-            return {"project_scan": scan, "status": "scanned"}
+            at = analysis.get("artifact_type", {})
+            print(f"  [scanner] Artifact type: {at.get('type', '?')} "
+                  f"({at.get('confidence', '?')}) — {at.get('description', '')[:60]}")
+            return {
+                "project_scan": analysis.get("surface_scan", {}),
+                "artifact_analysis": analysis,
+                "status": "scanned",
+            }
 
         def _detectors_node(state: SkillState) -> dict:
-            print("\n[detectors] Running 4 domain detectors in parallel...")
+            print("\n[detectors] Running 4 skill-dimension detectors in parallel...")
+            artifact_analysis = state.get("artifact_analysis", {})
             project_scan = state.get("project_scan", {})
             items: list[dict[str, Any]] = [
-                {"domain": "Python", "project_scan": project_scan},
-                {"domain": "JavaScript", "project_scan": project_scan},
-                {"domain": "Infrastructure", "project_scan": project_scan},
-                {"domain": "Configuration & Documentation", "project_scan": project_scan},
+                {"domain": "Domain Expertise", "artifact_analysis": artifact_analysis, "project_scan": project_scan},
+                {"domain": "Technical Craft", "artifact_analysis": artifact_analysis, "project_scan": project_scan},
+                {"domain": "Methodology & Tooling", "artifact_analysis": artifact_analysis, "project_scan": project_scan},
+                {"domain": "Depth & Rigor", "artifact_analysis": artifact_analysis, "project_scan": project_scan},
             ]
+            # Limit parallelism for claude_cli backend (each detector spawns a
+            # heavy claude -p subprocess; 4 in parallel causes OOM).
+            max_w = 1 if state.get("backend", backend) == "claude_cli" else 4
             outputs, succeeded, failed = BasePipeline._run_parallel_agents(
                 items, _run_detector, working_dir, state.get("backend", backend),
-                max_workers=4,
+                max_workers=max_w,
             )
             for out in outputs:
                 of = out.get("output_file", "")
@@ -170,7 +191,7 @@ class SkillPipeline(BasePipeline):
         def _aggregator_node(state: SkillState) -> dict:
             print("\n[aggregator] Aggregating domain reports...")
             detector_outputs = state.get("detector_outputs", [])
-            project_dir = state.get("input_spec", "")
+            project_dir = state.get("project_dir") or state.get("input_spec", "")
             inventory: dict[str, Any] = {}
             if any(d.get("output_file") for d in detector_outputs):
                 try:
@@ -198,7 +219,7 @@ class SkillPipeline(BasePipeline):
         def _writer_node(state: SkillState) -> dict:
             print("\n[writer] Generating final reports...")
             inventory = state.get("skill_inventory", {})
-            project_dir = state.get("input_spec", "")
+            project_dir = state.get("project_dir") or state.get("input_spec", "")
             proj_name = os.path.basename(project_dir.rstrip("/")) or "Project"
 
             if not inventory.get("skills"):
@@ -253,33 +274,42 @@ class SkillPipeline(BasePipeline):
     def _print_results(self, final_state: dict):
         print("-" * 60)
         status = final_state.get("status", "unknown")
-        print(f"Skill Summarizer Pipeline — {status.upper()}")
+        print(f"Skill Summarizer Pipeline v2 — {status.upper()}")
         print("-" * 60)
-        scan = final_state.get("project_scan", {})
-        if scan:
-            print(f"\nProject Scan:")
-            print(f"   Total files: {scan.get('total_files', '?')}")
-            print(f"   Directories: {scan.get('total_dirs', '?')}")
-            cats = scan.get("file_categories", {})
-            if cats:
-                for cat_name in ("source", "test", "config", "docs"):
-                    count = len(cats.get(cat_name, []))
-                    if count:
-                        print(f"   {cat_name}: {count} files")
+
+        aa = final_state.get("artifact_analysis", {})
+        if aa:
+            at = aa.get("artifact_type", {})
+            print(f"\nArtifact: {at.get('type', '?')} ({at.get('confidence', '?')})")
+            meta = aa.get("metadata", {})
+            if meta:
+                print(f"   Files: {meta.get('total_files', '?')}")
+                langs = meta.get("languages_detected", [])
+                if langs:
+                    print(f"   Languages: {', '.join(langs)}")
+
         detectors = final_state.get("detector_outputs", [])
         if detectors:
-            print(f"\nDomain Detectors:")
+            print(f"\nSkill Dimension Detectors:")
             for d in detectors:
                 mark = "✓" if d.get("output_file") else "✗"
                 data = d.get("data", {})
-                sc = len(data.get("skills", []))
-                print(f"   {mark} {d['domain']}: {sc} skills")
+                tc = len(data.get("detected_tools", []))
+                sc = len(data.get("inferred_skills", []))
+                parts = []
+                if tc:
+                    parts.append(f"{tc} tools")
+                if sc:
+                    parts.append(f"{sc} skills")
+                print(f"   {mark} {d['domain']}: {', '.join(parts) if parts else 'no output'}")
+
         inventory = final_state.get("skill_inventory", {})
         if inventory:
             s = inventory.get("summary", {})
             print(f"\nAggregated Inventory:")
-            print(f"   Total skills: {s.get('total_skills', 0)}")
-            domains = s.get("domains_covered", [])
-            if domains:
-                print(f"   Domains: {', '.join(domains)}")
+            print(f"   Tools: {s.get('total_tools', 0)}")
+            print(f"   Inferred skills: {s.get('total_inferred_skills', 0)}")
+            dims = s.get("dimensions_covered", [])
+            if dims:
+                print(f"   Dimensions: {', '.join(dims)}")
         print(f"\nOutputs in: {self.working_dir}")

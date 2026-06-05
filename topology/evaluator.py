@@ -6,6 +6,7 @@ from typing import Any
 
 from agent import AgentResult, AgentRole
 from tools import ToolRegistry
+from utils import extract_json_array
 
 
 class TopologyEvaluatorRole(AgentRole):
@@ -117,7 +118,7 @@ class TopologyEvaluatorRole(AgentRole):
         # 1. Try extracting JSON array from agent response messages
         for msg in reversed(result.messages):
             content = msg.content if hasattr(msg, "content") else str(msg)
-            json_str = self._extract_json_array(content)
+            json_str = extract_json_array(content)
             if json_str:
                 try:
                     parsed = json.loads(json_str)
@@ -266,34 +267,3 @@ class TopologyEvaluatorRole(AgentRole):
         result = [_score_one(t) for t in topologies]
         result.sort(key=lambda t: t.get("total_score", 0), reverse=True)
         return result
-
-    @staticmethod
-    def _extract_json_array(text: str) -> str | None:
-        """Extract the first complete JSON array using bracket counting."""
-        start = text.find('[')
-        if start == -1:
-            return None
-
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == '\\':
-                escape_next = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == '[':
-                depth += 1
-            elif ch == ']':
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-        return None

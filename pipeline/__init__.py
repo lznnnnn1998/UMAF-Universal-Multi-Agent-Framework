@@ -9,7 +9,7 @@ Provides BasePipeline and all five pipeline classes:
 """
 
 from .base import BasePipeline
-from .coder import CoderPipeline, CoderRole, ReviewerRole, MultiAgentState
+from .coder import CoderPipeline
 from .research import ResearchPipeline, ResearchState
 from .coderpp import CoderPPPipeline, CoderPPState
 from .topology import TopologyPipeline, TopologyState
@@ -18,7 +18,7 @@ from .feature import FeaturePipeline, FeatureState
 
 __all__ = [
     "BasePipeline",
-    "CoderPipeline", "CoderRole", "ReviewerRole", "MultiAgentState",
+    "CoderPipeline",
     "ResearchPipeline", "ResearchState",
     "CoderPPPipeline", "CoderPPState",
     "TopologyPipeline", "TopologyState",

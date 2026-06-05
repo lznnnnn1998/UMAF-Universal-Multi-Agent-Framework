@@ -1084,11 +1084,6 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
             "success": self.success,
         }
 
-    # --- Checkpoint / resume ---
-
-    def _checkpoint_path(self) -> str:
-        return self._ckpt.path_for_version(self.version)
-
     def _save_checkpoint(self, task: str = "", extra: dict[str, Any] | None = None):
         if not self.enable_checkpoint:
             return ""
@@ -1113,13 +1108,6 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
             messages=self.messages,
             extra=extra,
         )
-
-
-# --- Module-level helpers (backward-compatible) ---
-
-def _checkpoint_path(working_dir: str, agent_name: str) -> str:
-    """Return the path for version 1 checkpoint of the given agent."""
-    return CheckpointManager(working_dir, agent_name).path_for_version(1)
 
 
 def _load_checkpoint(path: str) -> dict[str, Any] | None:
@@ -1188,33 +1176,6 @@ class AgentRole(ABC):
         )
         return self.parse_result(result, working_dir, **context)
 
-
-def run_agent(
-    task: str,
-    working_dir: str,
-    tools: list[dict[str, Any]],
-    tool_map: dict[str, Callable],
-    max_steps: int = 10,
-    backend: str = "deepseek",
-    agent_name: str = "agent",
-    resume_from: str | None = None,
-    version: int = 1,
-) -> dict[str, Any]:
-    """Convenience function — creates a BaseAgent and runs it.
-
-    Kept for backward compatibility with existing callers.
-    """
-    agent = BaseAgent(
-        backend=backend,
-        working_dir=working_dir,
-        tools=tools,
-        tool_map=tool_map,
-        max_steps=max_steps,
-        agent_name=agent_name,
-        enable_checkpoint=resume_from is not None,
-        version=version,
-    )
-    return agent.run(task=task, resume_from=resume_from)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

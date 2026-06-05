@@ -1,7 +1,7 @@
 import re
 from typing import Any
 
-from agent import AgentResult, BaseDecomposerRole
+from agent import BaseDecomposerRole
 from tools import ToolRegistry
 
 
@@ -55,9 +55,8 @@ class ResearchDecomposerRole(BaseDecomposerRole):
     def _backend_instructions(self, backend: str) -> str:
         if backend == "claude_cli":
             return (
-                "Use your own knowledge to decompose the topic — do NOT search "
-                "the web. Output ONLY the JSON array, nothing else before or after. "
-                "Then write TASK_COMPLETE."
+                "Decompose the topic into sub-topics. Output the JSON array, "
+                "then write TASK_COMPLETE."
             )
         return (
             "Output ONLY the JSON array, nothing else before or after. "
