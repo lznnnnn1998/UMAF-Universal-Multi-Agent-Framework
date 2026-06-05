@@ -111,6 +111,52 @@ def _detect_framework(frameworks: list[tuple[str, list[str]]],
     return detected
 
 
+def _format_scan_summary(project_scan: dict[str, Any] | None) -> str:
+    """Build an inline summary of the project scan for detector prompts.
+
+    When the scanner has already run, this summary is embedded directly in
+    the prompt so detectors don't need to read ``project_scan.json`` from
+    disk.  Falls back to instructing the agent to read the file if no scan
+    data is provided.
+    """
+    if not project_scan or not project_scan.get("file_categories"):
+        return (
+            "\n## Project Scan\n"
+            "No pre-computed project scan is available. "
+            "Read `project_scan.json` from the working directory to "
+            "understand the project structure before proceeding.\n"
+        )
+
+    cats = project_scan.get("file_categories", {})
+    total = project_scan.get("total_files", len(sum(cats.values(), [])))
+    dirs = project_scan.get("total_dirs", "?")
+
+    lines = [
+        "\n## Project Scan (pre-computed — NO need to read from disk)",
+        f"**Total files**: {total}  |  **Directories**: {dirs}",
+        "",
+        "### File Categories",
+    ]
+    for cat_name, label in [
+        ("source", "Source"), ("test", "Test"), ("config", "Config"),
+        ("docs", "Docs"), ("build", "Build/CI"), ("ci", "CI"),
+        ("other", "Other"),
+    ]:
+        files = cats.get(cat_name, [])
+        if files:
+            preview = ", ".join(f"`{f}`" for f in files[:8])
+            extra = f" ... (+{len(files) - 8} more)" if len(files) > 8 else ""
+            lines.append(f"- **{label}** ({len(files)}): {preview}{extra}")
+
+    # Key directories
+    dir_list = project_scan.get("directories", [])
+    if dir_list:
+        lines.append(f"\n### Key Directories\n{', '.join(f'`{d}`' for d in dir_list[:12])}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Base detector — reduces boilerplate across the four domain detectors
 # ═══════════════════════════════════════════════════════════════════════════
@@ -249,16 +295,19 @@ class PythonDetectorRole(_BaseDetectorRole):
     domain: str = "Python"
 
     def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", **context: Any) -> str:
+                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+                   **context: Any) -> str:
         """Build the Python detection prompt."""
+        scan_summary = _format_scan_summary(project_scan)
         common = (
             f"You are a Python ecosystem analyst. Your job is to analyze a "
             f"project directory and identify all Python-related skills, tools, "
             f"and technologies in use.\n\n"
-            f"## Project Directory\n{project_dir}\n\n"
+            f"## Project Directory\n{project_dir}\n"
+            f"{scan_summary}"
             f"## Instructions\n"
-            f"1. First, read `project_scan.json` in the working directory to "
-            f"understand the project structure.\n"
+            f"1. The project structure is shown above. "
+            f"Focus your analysis on Python-related files and tools.\n"
             f"2. Check for Python version indicators:\n"
             f"   - Run `python3 --version` or `python --version`\n"
             f"   - Look for `.python-version` file\n"
@@ -516,16 +565,19 @@ class JSDetectorRole(_BaseDetectorRole):
     domain: str = "JavaScript"
 
     def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", **context: Any) -> str:
+                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+                   **context: Any) -> str:
         """Build the JS/Node.js detection prompt."""
-        # Prompt text is abbreviated in the prompt — the LLM will fill in details
+        scan_summary = _format_scan_summary(project_scan)
         common = (
             f"You are a JavaScript/Node.js ecosystem analyst. Your job is to "
             f"analyze a project directory and identify all JavaScript-related "
             f"skills, tools, and technologies in use.\n\n"
-            f"## Project Directory\n{project_dir}\n\n"
+            f"## Project Directory\n{project_dir}\n"
+            f"{scan_summary}"
             f"## Instructions\n"
-            f"1. First, read `project_scan.json` in the working directory.\n"
+            f"1. The project structure is shown above. "
+            f"Focus your analysis on JavaScript/Node.js-related files and tools.\n"
             f"2. Check for Node.js version:\n"
             f"   - Run `node --version`\n"
             f"   - Look for `.nvmrc` or `.node-version`\n"
@@ -767,15 +819,19 @@ class InfraDetectorRole(_BaseDetectorRole):
     domain: str = "Infrastructure"
 
     def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", **context: Any) -> str:
+                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+                   **context: Any) -> str:
         """Build the infrastructure detection prompt."""
+        scan_summary = _format_scan_summary(project_scan)
         common = (
             f"You are an infrastructure & DevOps analyst. Your job is to "
             f"analyze a project directory and identify all infrastructure and "
             f"DevOps tools and technologies in use.\n\n"
-            f"## Project Directory\n{project_dir}\n\n"
+            f"## Project Directory\n{project_dir}\n"
+            f"{scan_summary}"
             f"## Instructions\n"
-            f"1. Read `project_scan.json` in the working directory.\n"
+            f"1. The project structure is shown above. "
+            f"Focus your analysis on infrastructure and DevOps files.\n"
             f"2. Analyze the file listing for infrastructure indicators:\n"
             f"   - **Containerization**: Docker, Docker Compose, Podman\n"
             f"   - **Orchestration**: Kubernetes, Helm, Kustomize, OpenShift\n"
@@ -970,16 +1026,20 @@ class ConfigDocsDetectorRole(_BaseDetectorRole):
     domain: str = "Configuration & Documentation"
 
     def build_task(self, backend: str, project_dir: str = ".",
-                   working_dir: str = ".", **context: Any) -> str:
+                   working_dir: str = ".", project_scan: dict[str, Any] | None = None,
+                   **context: Any) -> str:
         """Build the config/docs detection prompt."""
+        scan_summary = _format_scan_summary(project_scan)
         common = (
             f"You are a project configuration & documentation analyst. Your "
             f"job is to analyze a project directory and identify all "
             f"configuration formats, documentation types, API specifications, "
             f"and development tooling in use.\n\n"
-            f"## Project Directory\n{project_dir}\n\n"
+            f"## Project Directory\n{project_dir}\n"
+            f"{scan_summary}"
             f"## Instructions\n"
-            f"1. Read `project_scan.json` in the working directory.\n"
+            f"1. The project structure is shown above. "
+            f"Focus your analysis on configuration, documentation, and tooling files.\n"
             f"2. Analyze for:\n"
             f"   - **Config formats**: YAML, TOML, JSON, INI, ENV, XML\n"
             f"   - **Documentation**: README, CONTRIBUTING, CHANGELOG, LICENSE, "

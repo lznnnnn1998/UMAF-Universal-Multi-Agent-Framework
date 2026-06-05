@@ -149,6 +149,7 @@ scanner → planner → coder ↔ reviewer (max 5 cycles) → writer → END
 | v1.4.1 | Jun 2026 | 8 bug fixes: agent loop edge cases, checkpointing, smoke tests |
 | v1.5 | Jun 2026 | Topology Optimizer + Skill Summarizer pipelines, 5 pipelines total |
 | v1.6 | Jun 2026 | Feature Pipeline + modular package structure (pipeline/, tools/, test/), 6 pipelines, 23 roles, 97 tests |
+| v1.6.1 | Jun 2026 | Dependency injection fixes: Coder (reviewer receives coder_files), Skill (upstream data passed to agents), CoderPP (dependency_outputs in workers_node) |
 
 ### Related
 [[version_diffs]], [[key_updates]], [[oop_refactoring]]

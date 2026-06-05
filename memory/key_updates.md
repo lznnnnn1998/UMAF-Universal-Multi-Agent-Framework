@@ -54,6 +54,28 @@ metadata:
 - Detected 33 skills across 11 categories on UMAF repo
 - Skills: langchain (extensively-used), DeepSeek API (extensively-used), LangGraph (used), ThreadPoolExecutor (used), DuckDuckGo (used), pytest (detected), urllib (extensively-used), argparse (used), dataclasses (extensively-used), subprocess (extensively-used), Claude CLI (extensively-used), etc.
 
+## New in v1.6.1
+
+### Dependency Injection Fixes (3 Pipelines)
+
+**CoderPipeline** — Reviewer was blind to coder output:
+- Added `coder_files: list[str]` to `MultiAgentState`
+- `_coder_node` scans working directory for produced files after coder runs
+- `ReviewerRole.build_task()` now accepts `coder_files` and renders "Files Produced by Coder" section
+
+**SkillPipeline** — Upstream data in state never reached downstream agents:
+- Detectors now receive `project_scan` via `execute()` with inline prompt summary
+- Aggregator now receives `detector_outputs` via `execute()` with domain summary table
+- Writer now receives `skill_inventory` via `execute()` with skill list preview
+
+**CoderPPPipeline** — `_workers_node` bypassed dependency injection entirely:
+- Was calling `_run_parallel_agents()` directly instead of `_run_workers_with_deps()`
+- Fix: added `completed` dict + `_dependency_outputs` injection + dual-key registration directly in `_workers_node`
+- Verified: 3-worker test with transitive deps, all reviewers passed, 131/131 tests
+
+### Related
+[[version_diffs]], [[architecture_progress]]
+
 ## New in v1.6
 
 ### Feature Pipeline

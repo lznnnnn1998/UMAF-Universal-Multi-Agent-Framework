@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -19,6 +20,7 @@ class MultiAgentState(TypedDict):
     review_passed: bool
     iteration: int
     backend: str
+    coder_files: list[str]
 
 
 class CoderRole(AgentRole):
@@ -52,10 +54,23 @@ class ReviewerRole(AgentRole):
     def tools_for_backend(self, backend: str) -> list[dict[str, Any]]:
         return ToolRegistry.to_dicts(ToolRegistry.reviewer_tools())
 
-    def build_task(self, backend: str, requirement: str = "", **context: Any) -> str:
+    def build_task(self, backend: str, requirement: str = "",
+                   coder_files: list[str] | None = None, **context: Any) -> str:
+        files_section = ""
+        if coder_files:
+            file_list = "\n".join(f"  - `{f}`" for f in sorted(coder_files)[:50])
+            trunc = ""
+            if len(coder_files) > 50:
+                trunc = f"\n  ... and {len(coder_files) - 50} more files"
+            files_section = (
+                f"\n## Files Produced by Coder\n"
+                f"The following files were written by the coder. "
+                f"Read and review each one:\n\n{file_list}{trunc}\n"
+            )
         return (
             f"Review the code written for this requirement:\n\n"
-            f"{requirement}\n\n"
+            f"{requirement}\n"
+            f"{files_section}\n"
             f"Read the files, check for bugs, test if possible. "
             f"If correct, output REVIEW_PASSED then TASK_COMPLETE. "
             f"If issues found, describe them and output REVIEW_FAILED then TASK_COMPLETE."
@@ -84,6 +99,7 @@ class CoderPipeline(BasePipeline):
             "review_passed": False,
             "iteration": 0,
             "backend": self.backend,
+            "coder_files": [],
         }
 
     def _build_graph(self) -> StateGraph:
@@ -107,11 +123,21 @@ class CoderPipeline(BasePipeline):
                     "role": type(m).__name__,
                     "content": m.content if hasattr(m, "content") else str(m),
                 })
+            # Collect files the coder produced so the reviewer knows what to review
+            wd = state["working_dir"]
+            coder_files: list[str] = []
+            if os.path.isdir(wd):
+                for root, dirs, files in os.walk(wd):
+                    dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "node_modules", ".git")]
+                    for f in files:
+                        if not f.startswith("."):
+                            coder_files.append(os.path.relpath(os.path.join(root, f), wd))
             return {
                 "messages": serialized,
                 "current_agent": "reviewer",
                 "review_passed": False,
                 "iteration": state["iteration"] + 1,
+                "coder_files": coder_files,
             }
 
         def _reviewer_node(state: MultiAgentState) -> dict:
@@ -119,6 +145,7 @@ class CoderPipeline(BasePipeline):
                 working_dir=state["working_dir"],
                 backend=state.get("backend", backend),
                 requirement=state["requirement"],
+                coder_files=state.get("coder_files", []),
             )
             review_passed = False
             for m in reversed(result.messages):

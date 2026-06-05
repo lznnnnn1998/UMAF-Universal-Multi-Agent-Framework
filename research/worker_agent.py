@@ -19,6 +19,7 @@ class ResearchWorkerRole(AgentRole):
         assert sub_task is not None
         title = sub_task["title"]
         description = sub_task["description"]
+        dep_outputs: list[dict[str, Any]] = sub_task.get("_dependency_outputs", [])
 
         # Determine which tools are available so the prompt can be tailored
         tool_specs = self.tools_for_backend(backend)
@@ -26,8 +27,8 @@ class ResearchWorkerRole(AgentRole):
 
         if backend == "claude_cli":
             prefetch_files = _prefetch_arxiv_sources(sub_task, context.get("working_dir", "."))
-            return _build_worker_task_claude_cli(title, description, output_file, prefetch_files, tool_names)
-        return _build_worker_task_deepseek(title, description, output_file, tool_names)
+            return _build_worker_task_claude_cli(title, description, output_file, prefetch_files, tool_names, dep_outputs)
+        return _build_worker_task_deepseek(title, description, output_file, tool_names, dep_outputs)
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      sub_task: dict | None = None, output_file: str = "", **context: Any) -> dict[str, Any]:
@@ -56,12 +57,40 @@ class ResearchWorkerRole(AgentRole):
         }
 
 
+def _build_dependency_section(dep_outputs: list[dict[str, Any]]) -> str:
+    """Build a prompt section instructing the worker to read upstream outputs.
+
+    When the worker depends on other sub-tasks, those outputs must be read
+    first to avoid duplicated work and to build on prior findings.
+    """
+    if not dep_outputs:
+        return ""
+
+    lines = [
+        "\n## Dependency Outputs (READ THESE FIRST)",
+        "Your research builds on the following completed sub-tasks. "
+        "Read each file before starting your own research — do NOT redo "
+        "work that has already been done. Instead, use these findings as "
+        "a foundation and focus on what's missing or needs deeper analysis.",
+        "",
+    ]
+    for d in dep_outputs:
+        fname = d.get("output_file", "")
+        d_title = d.get("title", "")
+        if fname:
+            lines.append(f"- **[{d['dep_id']}] {d_title}**: `{fname}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _build_worker_task_deepseek(title: str, description: str, output_file: str,
-                                tool_names: set[str] | None = None) -> str:
+                                tool_names: set[str] | None = None,
+                                dep_outputs: list[dict[str, Any]] | None = None) -> str:
     """Build worker task for the deepseek backend — uses call_claude for deep reasoning.
 
     tool_names: set of available tool names from the agent's tool list. The prompt
     only mentions tools that are actually available.
+    dep_outputs: list of completed upstream worker outputs this worker should read first.
     """
     tools = tool_names or set()
     has_web_search = "web_search" in tools
@@ -69,6 +98,9 @@ def _build_worker_task_deepseek(title: str, description: str, output_file: str,
     has_download_file = "download_file" in tools
     has_call_claude = "call_claude" in tools
     has_run_command = "run_command" in tools
+
+    # Build dependency section (upstream worker outputs to read first)
+    dep_section = _build_dependency_section(dep_outputs or [])
 
     # Build tool-specific instruction block
     search_instructions = []
@@ -116,7 +148,7 @@ def _build_worker_task_deepseek(title: str, description: str, output_file: str,
 ## Research Sub-Topic
 **Title**: {title}
 **Description**: {description}
-
+{dep_section}
 ## Instructions
 {tool_section}
 {verify_num}. Organize your findings into sections:
@@ -135,6 +167,7 @@ def _build_worker_task_claude_cli(
     title: str, description: str, output_file: str,
     prefetch_files: list[str] | None = None,
     tool_names: set[str] | None = None,
+    dep_outputs: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build worker task for the claude_cli backend.
 
@@ -144,9 +177,13 @@ def _build_worker_task_claude_cli(
     prefetch_files: local file paths already downloaded by the framework. The agent
     should read these directly — no HTTP requests to arxiv.org needed.
     tool_names: set of available tool names — prompt only mentions tools that exist.
+    dep_outputs: list of completed upstream worker outputs this worker should read first.
     """
     tools = tool_names or set()
     has_web_search = "web_search" in tools
+
+    # Build dependency section (upstream worker outputs to read first)
+    dep_section = _build_dependency_section(dep_outputs or [])
 
     prefetch_section = ""
     if prefetch_files:
@@ -159,6 +196,10 @@ def _build_worker_task_claude_cli(
     # Build numbered instructions that adapt to available tools
     instructions = []
     inst_num = 1
+    if dep_outputs:
+        dep_names = ", ".join(f"`{d['output_file']}`" for d in dep_outputs if d.get("output_file"))
+        instructions.append(f"{inst_num}. FIRST, use **Read** to read the dependency outputs listed above ({dep_names}). These are completed research files from sub-tasks that yours depends on. Do NOT redo their work — build on it.")
+        inst_num += 1
     if prefetch_files:
         instructions.append(f"{inst_num}. FIRST, use **Read** to read any pre-downloaded reference files listed above. These are already saved locally.")
         inst_num += 1
@@ -181,7 +222,7 @@ def _build_worker_task_claude_cli(
 ## Research Sub-Topic
 **Title**: {title}
 **Description**: {description}
-{prefetch_section}
+{dep_section}{prefetch_section}
 ## Instructions
 {chr(10).join(instructions)}
 

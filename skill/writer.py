@@ -72,18 +72,48 @@ class SkillReportWriterRole(AgentRole):
     # ── Task prompt ─────────────────────────────────────────────────────
 
     def build_task(self, backend: str, working_dir: str = ".",
-                   project_name: str = "", **context: Any) -> str:
+                   project_name: str = "",
+                   skill_inventory: dict[str, Any] | None = None,
+                   **context: Any) -> str:
         """Build the report generation prompt."""
         proj = project_name or os.path.basename(
             os.path.dirname(working_dir)) or "Project"
 
+        # Embed inventory summary inline so the writer doesn't need to
+        # discover the file from disk.
+        inventory_summary = ""
+        if skill_inventory and skill_inventory.get("skills"):
+            inv = skill_inventory
+            summary = inv.get("summary", {})
+            skills = inv.get("skills", [])
+            lines = [
+                "\n## Skill Inventory (pre-computed — NO need to read from disk)",
+                f"**Total skills**: {summary.get('total_skills', len(skills))}",
+                f"**Domains**: {', '.join(summary.get('domains_covered', []))}",
+                "",
+                "### Skills",
+            ]
+            for s in skills[:30]:
+                name = s.get("name", "?")
+                cat = s.get("category", "Other")
+                prof = s.get("proficiency", "beginner")
+                ver = s.get("version_hint", "")
+                ver_str = f" ({ver})" if ver else ""
+                lines.append(f"- **{name}** — {cat} — {prof}{ver_str}")
+            if len(skills) > 30:
+                lines.append(f"  ... and {len(skills) - 30} more skills")
+            lines.append("")
+            inventory_summary = "\n".join(lines)
+
         common = (
             f"You are a technical report writer. Your job is to read a skill "
             f"inventory and produce two polished output files.\n\n"
-            f"## Project\n{proj}\n\n"
+            f"## Project\n{proj}\n"
+            f"{inventory_summary}"
             f"## Input\n"
+            f"The skill inventory is summarized above. "
             f"Read `skill_inventory.json` from the working directory "
-            f"({working_dir}).\n\n"
+            f"({working_dir}) for full details.\n\n"
             f"## Output 1: `skills.json`\n"
             f"A structured JSON report with this schema:\n"
             f"```json\n"

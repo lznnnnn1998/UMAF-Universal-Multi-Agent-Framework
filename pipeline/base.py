@@ -429,10 +429,37 @@ class BasePipeline:
         all_outputs: list[dict] = []
         total_succeeded = 0
         total_failed = 0
+        # Map sub_task_id → output info so dependent tasks can read upstream results
+        completed: dict[int | str, dict[str, Any]] = {}
 
         for level_idx, level_tasks in enumerate(levels):
             names = [t.get("module_name") or t.get("title", "?") for t in level_tasks]
             print(f"\n  [dependency level {level_idx}/{len(levels)}] Running: {names}")
+
+            # Inject dependency outputs into tasks that declare dependencies
+            for t in level_tasks:
+                deps = t.get("dependencies", [])
+                if deps:
+                    dep_files: list[dict[str, Any]] = []
+                    for d in deps:
+                        # Resolve dependency by id (int) or name (str)
+                        dep_id: int | str | None = None
+                        if isinstance(d, int):
+                            dep_id = d
+                        elif isinstance(d, str):
+                            dep_id = d
+                        elif isinstance(d, dict):
+                            dep_id = d.get("id") or d.get("module_name")
+                        if dep_id is not None and dep_id in completed:
+                            cinfo = completed[dep_id]
+                            dep_files.append({
+                                "dep_id": dep_id,
+                                "title": cinfo.get("title") or cinfo.get("module_name", ""),
+                                "output_file": cinfo.get("output_file", ""),
+                                "files": cinfo.get("files", []),
+                            })
+                    if dep_files:
+                        t["_dependency_outputs"] = dep_files
 
             results, succeeded, failed = BasePipeline._run_parallel_agents(
                 level_tasks, agent_func, working_dir, backend, timeout,
@@ -442,6 +469,17 @@ class BasePipeline:
             all_outputs.extend(results)
             total_succeeded += succeeded
             total_failed += failed
+
+            # Record completed outputs so the next level can use them.
+            # Register both sub_task_id and module_name as keys so dependencies
+            # can be resolved by either (int id from Research, str name from CoderPP).
+            for out in results:
+                sid = out.get("sub_task_id")
+                if sid is not None:
+                    completed[sid] = out
+                mname = out.get("module_name")
+                if mname is not None:
+                    completed[mname] = out
 
             # Stop on dependency failure: dependent levels need the outputs of
             # this level — retry the failed dependency first (via version bump)

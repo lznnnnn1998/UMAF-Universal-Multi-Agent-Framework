@@ -7,6 +7,33 @@ metadata:
   originSessionId: 9c942f95-5fb5-4276-8e53-c16059ca5e31
 ---
 
+## v1.6.1 (June 2026) — Dependency Injection Fixes Across 3 Pipelines
+
+**Why:** Audit revealed 3 pipelines had dependency gaps where upstream agent outputs never reached dependent downstream agents. Coder reviewer was blind to coder output; Skill downstream agents relied on disk-based file discovery despite having data in LangGraph state; CoderPP workers_node completely bypassed `_run_workers_with_deps()`.
+
+### CoderPipeline Fix
+- Added `coder_files: list[str]` to `MultiAgentState` TypedDict
+- `_coder_node` now scans working directory for produced files after coder runs
+- `ReviewerRole.build_task()` now accepts `coder_files: list[str] = []` and renders "Files Produced by Coder" section
+
+### SkillPipeline Fix
+- `_detectors_node` embeds `project_scan` in each detector's item dict; `_run_detector` passes it to `role.execute(project_scan=...)`
+- `_aggregator_node` passes `detector_outputs` from state to `role.execute(detector_outputs=...)`
+- `_writer_node` passes `skill_inventory` from state to `role.execute(skill_inventory=...)`
+- All 4 detector `build_task()` methods now accept `project_scan` and render inline summary via `_format_scan_summary()`
+- Aggregator `build_task()` accepts `detector_outputs` with inline domain status/skills table
+- Writer `build_task()` accepts `skill_inventory` with inline skill list preview
+
+### CoderPP Fix (Critical)
+- `_workers_node` had its own topological level iteration but called `_run_parallel_agents()` directly — never injected `_dependency_outputs`
+- Added `completed` dict + dependency resolution before each topological level + dual-key registration after each level
+- Verified: 3-worker test (string_utils → validator → cli), dependency injection confirmed in checkpoints, 131/131 tests passing
+
+### Verified
+- All 97 tests pass after all changes
+- CoderPP end-to-end: dependency injection confirmed in worker checkpoints
+
+---
 ## v1.6 (June 2026) — Feature Pipeline + Modular Package Structure
 
 **Why:** Flat files were growing unwieldy (pipeline.py: 2,334 lines, tools.py+tools_integration.py: 1,101 lines). Needed a pipeline for adding/editing code in existing projects (not just generating new modules).

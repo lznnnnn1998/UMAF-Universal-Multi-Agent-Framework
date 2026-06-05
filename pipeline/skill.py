@@ -36,6 +36,7 @@ def _run_detector(item: dict[str, Any], working_dir: str, backend: str) -> dict[
     domain = item.get("domain", "")
     detector_cls = _DETECTOR_CLASSES.get(domain)
     output_file = _DETECTOR_OUTPUT_FILES.get(domain, "")
+    project_scan = item.get("project_scan", {})
 
     if detector_cls is None:
         return {"output_file": "", "domain": domain, "data": {},
@@ -44,7 +45,8 @@ def _run_detector(item: dict[str, Any], working_dir: str, backend: str) -> dict[
     try:
         role = detector_cls()
         try:
-            report = role.execute(working_dir=working_dir, backend=backend, project_dir=".")
+            report = role.execute(working_dir=working_dir, backend=backend,
+                                  project_dir=".", project_scan=project_scan)
         except Exception:
             report = {}
 
@@ -138,9 +140,12 @@ class SkillPipeline(BasePipeline):
 
         def _detectors_node(state: SkillState) -> dict:
             print("\n[detectors] Running 4 domain detectors in parallel...")
+            project_scan = state.get("project_scan", {})
             items: list[dict[str, Any]] = [
-                {"domain": "Python"}, {"domain": "JavaScript"},
-                {"domain": "Infrastructure"}, {"domain": "Configuration & Documentation"},
+                {"domain": "Python", "project_scan": project_scan},
+                {"domain": "JavaScript", "project_scan": project_scan},
+                {"domain": "Infrastructure", "project_scan": project_scan},
+                {"domain": "Configuration & Documentation", "project_scan": project_scan},
             ]
             outputs, succeeded, failed = BasePipeline._run_parallel_agents(
                 items, _run_detector, working_dir, state.get("backend", backend),
@@ -170,7 +175,9 @@ class SkillPipeline(BasePipeline):
             if any(d.get("output_file") for d in detector_outputs):
                 try:
                     role = SkillAggregatorRole()
-                    inventory = role.execute(working_dir=working_dir, backend=state.get("backend", backend))
+                    inventory = role.execute(working_dir=working_dir,
+                                             backend=state.get("backend", backend),
+                                             detector_outputs=detector_outputs)
                 except Exception as exc:
                     print(f"  [aggregator] Agent error: {exc}")
 
@@ -202,7 +209,7 @@ class SkillPipeline(BasePipeline):
             try:
                 role = SkillReportWriterRole()
                 role.execute(working_dir=working_dir, backend=state.get("backend", backend),
-                             project_name=proj_name)
+                             project_name=proj_name, skill_inventory=inventory)
                 if os.path.exists(os.path.join(working_dir, "skills.json")):
                     agent_ok = True
             except Exception as exc:

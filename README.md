@@ -212,6 +212,7 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v1.6.1** | Jun 2026 | Dependency injection fixes: Coder (reviewer receives coder_files), Skill (upstream data passed to detectors/aggregator/writer), CoderPP (dependency_outputs injected in workers_node) |
 | **v1.6** | Jun 2026 | Feature Pipeline, modular package structure (pipeline/, tools/, test/), 23 roles, 97 tests |
 | **v1.5** | Jun 2026 | Topology Optimizer + Skill Summarizer pipelines (5 total), meta-programming via CoderPP, 18 AgentRoles, 42 tests |
 | **v1.4.1** | Jun 2026 | 8 bug fixes: agent loop reorder, force wrap-up, checkpoint context, error spiral threshold, smoke tests |

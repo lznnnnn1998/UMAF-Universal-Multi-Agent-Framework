@@ -444,11 +444,39 @@ class CoderPPPipeline(BasePipeline):
             # ── Execute tasks with dependency ordering ──
             if tasks_to_run:
                 levels = BasePipeline._topological_levels(tasks_to_run)
+                # Track completed outputs so dependent tasks can read upstream results
+                completed: dict[int | str, dict[str, Any]] = {
+                    name: wo for name, wo in all_outputs_map.items() if wo.get("files")
+                }
 
                 for level_idx, level_tasks in enumerate(levels):
                     names = [t["module_name"] for t in level_tasks]
                     if len(levels) > 1:
                         print(f"\n  [dependency level {level_idx}] Running: {names}")
+
+                    # Inject dependency outputs so workers know about upstream modules
+                    for t in level_tasks:
+                        deps = t.get("dependencies", [])
+                        if deps:
+                            dep_files: list[dict[str, Any]] = []
+                            for d in deps:
+                                dep_id: int | str | None = None
+                                if isinstance(d, int):
+                                    dep_id = d
+                                elif isinstance(d, str):
+                                    dep_id = d
+                                elif isinstance(d, dict):
+                                    dep_id = d.get("id") or d.get("module_name")
+                                if dep_id is not None and dep_id in completed:
+                                    cinfo = completed[dep_id]
+                                    dep_files.append({
+                                        "dep_id": dep_id,
+                                        "title": cinfo.get("title") or cinfo.get("module_name", ""),
+                                        "output_file": cinfo.get("output_file", ""),
+                                        "files": cinfo.get("files", []),
+                                    })
+                            if dep_files:
+                                t["_dependency_outputs"] = dep_files
 
                     results, succeeded, failed = BasePipeline._run_parallel_agents(
                         level_tasks, _worker_func, working_dir, backend,
@@ -459,6 +487,13 @@ class CoderPPPipeline(BasePipeline):
                         name = r.get("module_name")
                         if name:
                             all_outputs_map[name] = r
+                        # Register in completed so downstream tasks can resolve deps
+                        sid = r.get("sub_task_id")
+                        if sid is not None:
+                            completed[sid] = r
+                        mname = r.get("module_name")
+                        if mname is not None:
+                            completed[mname] = r
 
                     # Validate file content: workers may report success but
                     # produce empty/trivial files (e.g. when JSON parsing fails).

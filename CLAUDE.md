@@ -1,4 +1,4 @@
-# Universal Multi-Agent Framework (UMAF) v1.6
+# Universal Multi-Agent Framework (UMAF) v1.6.1
 
 LangChain + DeepSeek multi-agent framework with six pipelines and two backends. OOP architecture with 5-layer class hierarchy.
 
@@ -150,6 +150,12 @@ pip install -r requirements.txt
 - CoderPP workers can get stuck on TaskOutput framework calls when modifying pipeline.py
 
 ## Version History
+
+### v1.6.1 (June 2026) — Dependency Injection Fixes Across 3 Pipelines
+- **CoderPipeline**: Reviewer was blind to coder output — now receives `coder_files` (files produced by coder, scanned from working directory) via `execute()` and displayed in reviewer prompt as "Files Produced by Coder" section. Added `coder_files: list[str]` to `MultiAgentState`.
+- **SkillPipeline**: Upstream data in LangGraph state never reached downstream agents — detectors, aggregator, and writer all relied on discovering files from disk. Fixed by passing `project_scan`, `detector_outputs`, and `skill_inventory` via `execute()` kwargs, with inline summaries embedded in prompts so agents know what was computed upstream.
+- **CoderPPPipeline**: `_workers_node` had its own topological level loop but called `_run_parallel_agents()` directly, completely bypassing `_run_workers_with_deps()` and never injecting `_dependency_outputs`. Fixed by adding `completed` dict + dependency resolution + dual-key registration (by `sub_task_id` and `module_name`) directly in `_workers_node`. Verified: 3-worker test with transitive dependencies, all reviewers passed, 131/131 tests passing in assembled project.
+- **Verified**: All 97 tests pass. CoderPP dependency injection confirmed in worker checkpoints.
 
 ### v1.6 (June 2026) — Feature Pipeline + Modular Package Structure
 - **Feature Pipeline**: 5-node graph (scanner → planner → coder ↔ reviewer → writer) for adding/editing code in existing projects. 5 AgentRoles in `feature/`. Supports both `files_to_create` AND `files_to_modify`.

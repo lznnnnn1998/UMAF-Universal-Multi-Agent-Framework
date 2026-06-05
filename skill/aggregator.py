@@ -71,8 +71,37 @@ class SkillAggregatorRole(AgentRole):
     # ── Task prompt ─────────────────────────────────────────────────────
 
     def build_task(self, backend: str, working_dir: str = ".",
+                   detector_outputs: list[dict[str, Any]] | None = None,
                    **context: Any) -> str:
         """Build the aggregation prompt."""
+        # Build inline summary of detector results so the aggregator knows
+        # what was found without having to discover files from disk.
+        detector_summary = ""
+        if detector_outputs:
+            lines = [
+                "\n## Detector Results (pre-computed — NO need to read from disk)",
+                "The following domain reports have already been generated. "
+                "Their contents are summarized below. Read the JSON files "
+                "ONLY if you need additional detail beyond what is shown here.",
+                "",
+            ]
+            for d in detector_outputs:
+                domain = d.get("domain", "Unknown")
+                output_file = d.get("output_file", "")
+                summary = d.get("summary", "")
+                data = d.get("data", {})
+                skills = data.get("skills", [])
+                skill_preview = ""
+                if skills:
+                    names = [s.get("name", "?") for s in skills[:10]]
+                    skill_preview = f"\n   Skills: {', '.join(names)}"
+                    if len(skills) > 10:
+                        skill_preview += f" ... (+{len(skills) - 10} more)"
+                mark = "✓" if output_file else "✗"
+                lines.append(f"- **{mark} {domain}** — {summary}{skill_preview}")
+            lines.append("")
+            detector_summary = "\n".join(lines)
+
         common = (
             f"You are a skill inventory aggregator. Your job is to read four "
             f"domain-specific reports and combine them into a unified skill "
@@ -81,9 +110,10 @@ class SkillAggregatorRole(AgentRole):
             f"1. `python_report.json` — Python ecosystem skills\n"
             f"2. `javascript_report.json` — JavaScript ecosystem skills\n"
             f"3. `infrastructure_report.json` — Infrastructure & DevOps skills\n"
-            f"4. `configdocs_report.json` — Configuration, docs, API specs\n\n"
+            f"4. `configdocs_report.json` — Configuration, docs, API specs\n"
+            f"{detector_summary}"
             f"## Task\n"
-            f"1. Read all four report files.\n"
+            f"1. Read all four report files for full details.\n"
             f"2. **Deduplicate**: If the same skill appears in multiple reports "
             f"(e.g., \"Docker\" may appear in both infra and config), keep the "
             f"one with higher proficiency and add a `sources` field listing "

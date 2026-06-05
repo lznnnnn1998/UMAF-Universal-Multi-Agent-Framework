@@ -33,16 +33,17 @@ class CoderPPWorkerRole(AgentRole):
         module_dir = f"modules/{module_name}"
         files_to_create = sub_task.get("files_to_create", [])
         environment = context.get("environment", "")
+        dep_outputs: list[dict[str, Any]] = sub_task.get("_dependency_outputs", [])
 
         is_cpp = self._is_cpp_module(sub_task)
 
         if backend == "claude_cli":
             if is_cpp:
-                return _build_worker_task_cpp_claude_cli(module_name, description, module_dir, files_to_create, environment)
-            return _build_worker_task_claude_cli(module_name, description, module_dir, environment)
+                return _build_worker_task_cpp_claude_cli(module_name, description, module_dir, files_to_create, environment, dep_outputs)
+            return _build_worker_task_claude_cli(module_name, description, module_dir, environment, dep_outputs)
         if is_cpp:
-            return _build_worker_task_cpp_deepseek(module_name, description, module_dir, files_to_create, environment)
-        return _build_worker_task_deepseek(module_name, description, module_dir, environment)
+            return _build_worker_task_cpp_deepseek(module_name, description, module_dir, files_to_create, environment, dep_outputs)
+        return _build_worker_task_deepseek(module_name, description, module_dir, environment, dep_outputs)
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      sub_task: dict | None = None, **context: Any) -> dict[str, Any]:
@@ -92,7 +93,34 @@ class CoderPPWorkerRole(AgentRole):
         }
 
 
-def _build_worker_task_deepseek(title: str, description: str, module_dir: str, environment: str = "") -> str:
+def _build_coderpp_dependency_section(dep_outputs: list[dict[str, Any]]) -> str:
+    """Build a prompt section telling the worker to read upstream module code."""
+    if not dep_outputs:
+        return ""
+
+    lines = [
+        "\n## Upstream Dependencies (READ THESE FIRST)",
+        "Your module depends on the following modules which have already been implemented. "
+        "Read their code before writing your own — understand their interfaces, "
+        "public APIs, and data structures so your module integrates correctly.",
+        "",
+    ]
+    for d in dep_outputs:
+        d_title = d.get("title") or str(d.get("dep_id", "?"))
+        files = d.get("files", [])
+        if files:
+            file_list = ", ".join(f"`{f}`" for f in files[:6])
+            if len(files) > 6:
+                file_list += f", ... ({len(files)} files total)"
+            lines.append(f"- **[{d['dep_id']}] {d_title}**: {file_list}")
+        else:
+            lines.append(f"- **[{d['dep_id']}] {d_title}** (in `modules/{d_title}/`)")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_worker_task_deepseek(title: str, description: str, module_dir: str, environment: str = "",
+                                dep_outputs: list[dict[str, Any]] | None = None) -> str:
     env_section = ""
     if environment:
         env_section = f"""## Project Environment
@@ -102,12 +130,13 @@ Use the exact python path and conda environment documented below when running co
 {environment}
 
 """
+    dep_section = _build_coderpp_dependency_section(dep_outputs or [])
     return f"""You are a software engineer. Implement the following module with complete, working code.
 
 {env_section}## Module
 **Name**: {title}
 **Description**: {description}
-
+{dep_section}
 ## Output Directory
 All file paths are RELATIVE to the working directory. The working directory name MUST NOT appear in any path or command you write.
 - `write_file` / `write_lines`: paths resolve relative to working directory automatically (e.g., `{module_dir}/module.py`).
@@ -140,7 +169,8 @@ Document the exact test command in your log.md.
 Focus on clean, working code. The module must be independently testable."""
 
 
-def _build_worker_task_claude_cli(title: str, description: str, module_dir: str, environment: str = "") -> str:
+def _build_worker_task_claude_cli(title: str, description: str, module_dir: str, environment: str = "",
+                                  dep_outputs: list[dict[str, Any]] | None = None) -> str:
     env_section = ""
     if environment:
         env_section = f"""## Project Environment
@@ -150,12 +180,13 @@ Use the exact python path and conda environment documented below when running co
 {environment}
 
 """
+    dep_section = _build_coderpp_dependency_section(dep_outputs or [])
     return f"""You are a software engineer. Implement the following module with complete, working code.
 
 {env_section}## Module
 **Name**: {title}
 **Description**: {description}
-
+{dep_section}
 ## Output Directory
 All file paths are RELATIVE to the working directory. The working directory name MUST NOT appear in any path or command you write.
 - `Write`/`Read`: paths resolve relative to working directory automatically.
@@ -187,6 +218,7 @@ Focus on clean, working code. The module must be independently testable. Use you
 def _build_worker_task_cpp_claude_cli(
     title: str, description: str, module_dir: str,
     files_to_create: list[str], environment: str = "",
+    dep_outputs: list[dict[str, Any]] | None = None,
 ) -> str:
     env_section = ""
     if environment:
@@ -195,12 +227,13 @@ def _build_worker_task_cpp_claude_cli(
 
 """
     file_list = "\n".join(f"  - {f}" for f in files_to_create)
+    dep_section = _build_coderpp_dependency_section(dep_outputs or [])
     return f"""You are a C++ software engineer. Implement the following module with complete, working C++ code.
 
 {env_section}## Module
 **Name**: {title}
 **Description**: {description}
-
+{dep_section}
 ## Files to Create
 {file_list}
 
@@ -250,6 +283,7 @@ Focus on clean, compilable C++ interfaces. No algorithm logic — only architect
 def _build_worker_task_cpp_deepseek(
     title: str, description: str, module_dir: str,
     files_to_create: list[str], environment: str = "",
+    dep_outputs: list[dict[str, Any]] | None = None,
 ) -> str:
     env_section = ""
     if environment:
@@ -258,12 +292,13 @@ def _build_worker_task_cpp_deepseek(
 
 """
     file_list = "\n".join(f"  - {f}" for f in files_to_create)
+    dep_section = _build_coderpp_dependency_section(dep_outputs or [])
     return f"""You are a C++ software engineer. Implement the following module with complete, working C++ code.
 
 {env_section}## Module
 **Name**: {title}
 **Description**: {description}
-
+{dep_section}
 ## Files to Create
 {file_list}
 
