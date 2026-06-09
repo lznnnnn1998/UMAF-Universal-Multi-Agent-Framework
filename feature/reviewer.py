@@ -7,7 +7,7 @@ from typing import Any
 
 from tools import ToolRegistry
 from agent import AgentResult, AgentRole
-from utils import safe_read
+from utils import safe_read, scan_review_verdict
 
 
 class FeatureReviewerRole(AgentRole):
@@ -74,27 +74,25 @@ class FeatureReviewerRole(AgentRole):
 
     def parse_result(self, result: AgentResult, working_dir: str = ".",
                      **context: Any) -> dict[str, Any]:
-        review_passed = False
+        verdict = scan_review_verdict(result.messages)
+        review_passed = verdict is True
         review_issues: list[str] = []
 
-        for msg in reversed(result.messages):
-            content = msg.content if hasattr(msg, "content") else str(msg)
-            if type(msg).__name__ != "AIMessage":
-                continue
-            if "REVIEW_PASSED" in content and "REVIEW_FAILED" not in content:
-                review_passed = True
-                break
-            elif "REVIEW_FAILED" in content:
-                review_passed = False
-                # Collect issues
-                for line in content.split("\n"):
-                    stripped = line.strip()
-                    if stripped.startswith("- ") or stripped.startswith("* "):
-                        review_issues.append(stripped[2:])
-                    elif "issue" in stripped.lower() or "fail" in stripped.lower():
-                        if len(stripped) > 10:
-                            review_issues.append(stripped)
-                break
+        if verdict is False:
+            # Collect issues from the REVIEW_FAILED message
+            for msg in reversed(result.messages):
+                content = msg.content if hasattr(msg, "content") else str(msg)
+                if type(msg).__name__ != "AIMessage":
+                    continue
+                if "REVIEW_FAILED" in content:
+                    for line in content.split("\n"):
+                        stripped = line.strip()
+                        if stripped.startswith("- ") or stripped.startswith("* "):
+                            review_issues.append(stripped[2:])
+                        elif "issue" in stripped.lower() or "fail" in stripped.lower():
+                            if len(stripped) > 10:
+                                review_issues.append(stripped)
+                    break
 
         return {
             "review_passed": review_passed,

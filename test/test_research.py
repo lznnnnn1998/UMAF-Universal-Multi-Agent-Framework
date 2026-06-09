@@ -15,6 +15,7 @@ from pipeline.research import (
     HEAD_TIMEOUT, WORKER_TIMEOUT,
 )
 from research.head_agent import ResearchDecomposerRole
+from utils import extract_json_array
 from research.reviewer_agent import ResearchReviewerRole, _extract_scores_from_result
 from research.writer import WriterRole, _latex_escape
 
@@ -149,25 +150,22 @@ class TestDecomposerRole:
 
     def test_extract_json_array_bracket_counting_with_latex(self):
         """Bracket-counting parser handles LaTeX \\begin{...}\\end{...} pairs."""
-        from agent import BaseDecomposerRole
         text = r'[\n{"id": 1, "title": "Test", "deps": [\begin{itemize}\item x\end{itemize}]}\n]'
-        result = BaseDecomposerRole._extract_json_array(text)
+        result = extract_json_array(text)
         assert result is not None
 
     def test_extract_json_array_nested_objects(self):
         """Bracket-counting parser handles deeply nested JSON objects."""
-        from agent import BaseDecomposerRole
         text = '[{"a": {"b": {"c": [1, 2, 3]}}, "d": "text with [brackets] inside"}]'
-        result = BaseDecomposerRole._extract_json_array(text)
+        result = extract_json_array(text)
         assert result is not None
         parsed = json.loads(result)
         assert parsed[0]["a"]["b"]["c"] == [1, 2, 3]
 
     def test_extract_json_array_matches_first_array_only(self):
         """Returns the first complete JSON array, not the greedy last one."""
-        from agent import BaseDecomposerRole
         text = '[{"first": true}] more text [{"second": false}]'
-        result = BaseDecomposerRole._extract_json_array(text)
+        result = extract_json_array(text)
         assert result is not None
         parsed = json.loads(result)
         assert len(parsed) == 1
@@ -175,8 +173,7 @@ class TestDecomposerRole:
 
     def test_extract_json_array_no_bracket_returns_none(self):
         """Returns None when text contains no opening bracket."""
-        from agent import BaseDecomposerRole
-        assert BaseDecomposerRole._extract_json_array("no brackets here") is None
+        assert extract_json_array("no brackets here") is None
 
     def test_build_task_includes_all_sizing_tiers(self):
         """build_task includes sizing guide and backend instructions."""

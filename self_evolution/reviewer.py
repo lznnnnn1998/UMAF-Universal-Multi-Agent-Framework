@@ -9,6 +9,7 @@ from typing import Any
 
 from agent import AgentResult, AgentRole
 from tools import ToolRegistry
+from utils import scan_review_verdict
 
 
 class SelfEvolutionReviewerRole(AgentRole):
@@ -70,38 +71,42 @@ Be thorough but fair. If the tests pass and the code follows conventions, this i
             return {"review_passed": False, "review_issues": ["Agent did not complete successfully."],
                     "test_results": "", "changed_files": changed_files or []}
 
-        review_passed = False
+        verdict = scan_review_verdict(result.messages)
+        review_passed = verdict is True
         review_issues: list[str] = []
         test_results = ""
 
-        # Scan reversed messages for verdict and test results
+        # Extract test results from messages
         for msg in reversed(result.messages):
             content = getattr(msg, "content", None)
             if content is None:
                 content = str(msg)
             if not isinstance(content, str):
                 continue
-
-            # Extract test results summary (e.g. "49 passed, 1 failed")
             test_match = re.search(
                 r"(\d+\s+passed.*?)(?:\s+in\s+[\d.]+s)?",
                 content,
             )
             if test_match:
                 test_results = test_match.group(1)
+                break
 
-            if "REVIEW_PASSED" in content and "REVIEW_FAILED" not in content:
-                review_passed = True
-                break
-            elif "REVIEW_FAILED" in content:
-                lines = content.split("\n")
-                for line in lines:
-                    stripped = line.strip()
-                    if stripped.startswith("- ") or stripped.startswith("* "):
-                        review_issues.append(stripped[2:])
-                if not review_issues:
-                    review_issues.append("Review failed — review message for details.")
-                break
+        # Collect issues when review failed
+        if verdict is False:
+            for msg in reversed(result.messages):
+                content = getattr(msg, "content", None)
+                if content is None:
+                    content = str(msg)
+                if not isinstance(content, str):
+                    continue
+                if "REVIEW_FAILED" in content:
+                    for line in content.split("\n"):
+                        stripped = line.strip()
+                        if stripped.startswith("- ") or stripped.startswith("* "):
+                            review_issues.append(stripped[2:])
+                    if not review_issues:
+                        review_issues.append("Review failed — review message for details.")
+                    break
 
         return {
             "review_passed": review_passed,

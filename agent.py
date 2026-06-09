@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from claude_config import merge_claude_env
 from llm import get_llm
+from utils import extract_json_array, find_matching_delimiter, serialize_messages as serialize_msgs
 
 # --- Module-level constants ---
 _PERSISTENT_ERRORS = ("timed out", "not found", "no such file", "permission denied")
@@ -204,11 +205,7 @@ class CheckpointManager:
 
     @staticmethod
     def serialize_messages(messages: list) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
-        for m in messages:
-            content = m.content if hasattr(m, "content") else str(m)
-            out.append({"type": type(m).__name__, "content": content})
-        return out
+        return serialize_msgs(messages, key="type")
 
     @staticmethod
     def deserialize_messages(raw: list[dict[str, str]]) -> list:
@@ -454,36 +451,9 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
         for match in reversed(matches):
             outer_start = match.start()
 
-            # Brace-count with JSON string tracking.
-            depth = 0
-            in_string = False
-            escape_next = False
-            end_pos = -1
-            for i in range(outer_start, len(text)):
-                ch = text[i]
-                if escape_next:
-                    escape_next = False
-                    continue
-                if ch == '\\':
-                    escape_next = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        end_pos = i
-                        break
-
-            if end_pos == -1:
+            json_str = find_matching_delimiter(text, outer_start, "{", "}")
+            if json_str is None:
                 continue
-
-            json_str = text[outer_start:end_pos + 1]
 
             # --- Attempt 1: strict parse ---
             try:
@@ -1274,7 +1244,7 @@ class BaseDecomposerRole(AgentRole):
         # 1. Try extracting JSON from agent response messages
         for msg in reversed(result.messages):
             content = msg.content if hasattr(msg, "content") else str(msg)
-            json_str = self._extract_json_array(content)
+            json_str = extract_json_array(content)
             if json_str:
                 try:
                     sub_tasks = json.loads(json_str)
@@ -1302,40 +1272,3 @@ class BaseDecomposerRole(AgentRole):
             sub_tasks = self._fallback_decompose(input_spec)
         return sub_tasks
 
-    # -- JSON extraction ---------------------------------------------------
-
-    @staticmethod
-    def _extract_json_array(text: str) -> str | None:
-        """Extract the first complete JSON array using bracket counting.
-
-        Unlike greedy ``r\"[[\\s\\S]*]\"`` this correctly handles content that
-        may itself contain brackets (LaTeX ``\\begin{...}``, math expressions,
-        nested objects) by tracking string state and bracket depth.
-        """
-        start = text.find('[')
-        if start == -1:
-            return None
-
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == '\\':
-                escape_next = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == '[':
-                depth += 1
-            elif ch == ']':
-                depth -= 1
-                if depth == 0:
-                    return text[start:i + 1]
-        return None

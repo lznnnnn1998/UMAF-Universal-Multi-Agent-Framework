@@ -3,6 +3,7 @@ from typing import Any
 
 from agent import AgentResult, AgentRole
 from tools import ToolRegistry
+from utils import scan_review_verdict
 
 
 class CoderPPReviewerRole(AgentRole):
@@ -43,16 +44,7 @@ class CoderPPReviewerRole(AgentRole):
 
         # Check only AIMessages for the verdict — task prompts and tool results
         # may contain REVIEW_PASSED/REVIEW_FAILED as part of instructions/docs.
-        review_passed = False
-        for msg in reversed(result.messages):
-            if type(msg).__name__ != "AIMessage":
-                continue
-            content = msg.content if hasattr(msg, "content") else str(msg)
-            if "REVIEW_PASSED" in content and "REVIEW_FAILED" not in content:
-                review_passed = True
-                break
-            elif "REVIEW_FAILED" in content:
-                break
+        review_passed = scan_review_verdict(result.messages) or False
 
         # Double-check: read the review.md file if it was written — it is the
         # authoritative source for the verdict.

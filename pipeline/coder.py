@@ -8,6 +8,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agent import AgentRole
+from utils import scan_review_verdict, serialize_messages
 from tools import ToolRegistry
 from .base import BasePipeline
 
@@ -117,12 +118,7 @@ class CoderPipeline(BasePipeline):
                 requirement=state["requirement"],
             )
             # result is AgentResult — serialize messages
-            serialized = []
-            for m in result.messages:
-                serialized.append({
-                    "role": type(m).__name__,
-                    "content": m.content if hasattr(m, "content") else str(m),
-                })
+            serialized = serialize_messages(result.messages, key="role")
             # Collect files the coder produced so the reviewer knows what to review
             wd = state["working_dir"]
             coder_files: list[str] = []
@@ -147,23 +143,8 @@ class CoderPipeline(BasePipeline):
                 requirement=state["requirement"],
                 coder_files=state.get("coder_files", []),
             )
-            review_passed = False
-            for m in reversed(result.messages):
-                if type(m).__name__ != "AIMessage":
-                    continue
-                content = m.content if hasattr(m, "content") else str(m)
-                if "REVIEW_PASSED" in content and "REVIEW_FAILED" not in content:
-                    review_passed = True
-                    break
-                elif "REVIEW_FAILED" in content:
-                    review_passed = False
-                    break
-            serialized = []
-            for m in result.messages:
-                serialized.append({
-                    "role": type(m).__name__,
-                    "content": m.content if hasattr(m, "content") else str(m),
-                })
+            review_passed = scan_review_verdict(result.messages) or False
+            serialized = serialize_messages(result.messages, key="role")
             return {
                 "messages": serialized,
                 "review_passed": review_passed,
