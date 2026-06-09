@@ -11,11 +11,16 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
         BasePipeline      AgentRole ABC
         ├── CoderPipeline       ├── CoderRole
         ├── ResearchPipeline    ├── ReviewerRole
-        ├── CoderPPPipeline     ├── ResearchWorkerRole
-        ├── TopologyPipeline    ├── ResearchDecomposerRole
-        ├── SkillPipeline       ├── ResearchReviewerRole
-        ├── FeaturePipeline     ├── WriterRole
-        └── SelfEvolutionPipeline ├── SelfEvolutionAnalyzerRole
+        ├── CoderPPPipeline     ├── CoderPPDecomposerRole
+        ├── TopologyPipeline    ├── CoderPPWorkerRole
+        ├── SkillPipeline       ├── CoderPPReviewerRole
+        ├── FeaturePipeline     ├── OrganizerRole
+        └── SelfEvolutionPipeline ├── ObserverRole
+                                ├── ResearchWorkerRole
+                                ├── ResearchDecomposerRole
+                                ├── ResearchReviewerRole
+                                ├── WriterRole
+                                ├── SelfEvolutionAnalyzerRole
                                 ├── SelfEvolutionPlannerRole
                                 ├── SelfEvolutionCoderRole
                                 ├── SelfEvolutionReviewerRole
@@ -48,7 +53,7 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
 Factory: `get_llm(backend)`.
 
 ### `tools/` — Eight tools + ToolRegistry
-`read_file`, `write_file`, `write_lines` (preferred for code — avoids multi-line string escaping), `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 23 role-specific methods, all defaults empty — tools come from config), `functions.py` (8 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods, auto-applied at import). `__init__.py` re-exports — no duplicated tool definitions.
+`read_file`, `write_file`, `write_lines` (preferred for code — avoids multi-line string escaping), `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 28 role-specific methods, all defaults empty — tools come from config), `functions.py` (8 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods, auto-applied at import). `__init__.py` re-exports — no duplicated tool definitions.
 
 ### `tools_config.json` — Canonical tool assignments (v1.7)
 Single source of truth for per-role tool assignments. Auto-loaded by `main.py` at startup. Maps pipeline → role → tool list. Also defines per-tool timeout overrides. `--tools-config` flag overrides with a custom file. All `ToolRegistry.*_tools()` methods return `[]` by default — `set_tool_config()` must be called first. Metadata keys (`__about__`, `_description`, etc.) are stripped on load. `__global__` key provides fallback for unlisted roles.
@@ -129,15 +134,15 @@ Loads `claude_env_sample.json` (12 env vars). Falls back to `.example.json`. `me
 
 ### Directories
 - `pipeline/`: base, coder, research, coderpp, topology, skill, feature, self_evolution (7 pipeline classes + BasePipeline)
-- `tools/`: registry, functions, feature_tools (ToolSpec + 7 tool implementations + 23 role methods)
+- `tools/`: registry, functions, feature_tools (ToolSpec + 8 tool implementations + 28 role methods)
 - `self_evolution/`: analyzer, planner, coder, reviewer, writer (5 agent roles)
 - `feature/`: scanner, planner, coder, reviewer, writer (5 agent roles)
 - `research/`: head_agent, worker_agent, reviewer_agent, writer (4 agent roles)
-- `coderpp/`: head_agent, worker_agent, reviewer_agent, organizer (4 agent roles)
+- `coderpp/`: head_agent, worker_agent, reviewer_agent, organizer (5 agent roles)
 - `topology/`: analyzer, designer, evaluator, writer (4 agent roles)
-- `skill/`: scanner, detectors, aggregator, writer (4 agent roles)
+- `skill/`: scanner, detectors, aggregator, writer (7 agent roles)
 - `test/`: 10 test files (379 tests) — conftest, test_smoke, test_pipeline, test_coder, test_research, test_coderpp, test_topology, test_skill, test_feature, test_self_evolution
-- `utils.py`: shared helpers (extract_json_object, extract_json_array, safe_read, _PROFICIENCY_SCORES)
+- `utils.py`: shared helpers (find_matching_delimiter, extract_json_object, extract_json_array, safe_read, scan_review_verdict, serialize_messages, _PROFICIENCY_SCORES)
 
 ## Setup
 
@@ -154,7 +159,7 @@ pip install -r requirements.txt
 - `AgentRole` ABC + `ToolRegistry` centralization (no duplicated tool definitions)
 - Tool metadata + TOOL_MAP separation; explicit `working_dir` (no global state)
 - Tool name translation for Claude CLI (Python names → native names via regex)
-- Tool assignment driven by `tools_config.json` (v1.7): no hardcoded defaults in code; all 23 role methods return `[]` — `set_tool_config()` is the single source of truth
+- Tool assignment driven by `tools_config.json` (v1.7): no hardcoded defaults in code; all 28 role methods return `[]` — `set_tool_config()` is the single source of truth
 - Backend-aware task generation (v1.2): no nested `claude -p` for claude_cli workers
 - **Python >= 3.11**: `X | None` syntax, no deprecated `Optional[X]` or `Union[X, Y]`
 - Fallbacks at every stage; DuckDuckGo Lite (no API key); all agents logged for debugging

@@ -35,7 +35,7 @@ main.py
 │   ├── topology.py, skill.py, feature.py, self_evolution.py
 │   └── agent.py (autonomous agent loop + AgentRole ABC + CheckpointManager)
 │       ├── llm.py (DeepSeek API / Claude CLI subprocess)
-│       └── tools/ (8 tools + ToolRegistry with 23 role-specific methods)
+│       └── tools/ (8 tools + ToolRegistry with 28 role-specific methods)
 │           ├── registry.py, functions.py, feature_tools.py
 │
 ├── self_evolution/ (5 roles)    ├── feature/ (5 roles)
@@ -51,7 +51,7 @@ main.py
 │   ├── evaluator.py             │   ├── reviewer_agent.py
 │   └── writer.py                │   └── writer.py
 │                                │
-├── skill/ (4 roles)             └── coderpp/ (4 roles)
+├── skill/ (7 roles)             └── coderpp/ (5 roles)
 │   ├── scanner.py                   ├── head_agent.py
 │   ├── detectors.py                 ├── worker_agent.py
 │   ├── aggregator.py                ├── reviewer_agent.py
@@ -112,12 +112,13 @@ Requires **Python >= 3.11**.
 
 ## Tools
 
-All tools are defined in `tools/registry.py` with implementations in `tools/functions.py`. `ToolRegistry` provides 23 role-specific classmethods — no duplicated tool definitions.
+All tools are defined in `tools/registry.py` with implementations in `tools/functions.py`. `ToolRegistry` provides 28 role-specific classmethods — no duplicated tool definitions.
 
 | Tool | Description | Timeout |
 |------|-------------|---------|
 | `read_file(path)` | Read file contents | — |
 | `write_file(path, content)` | Write file (creates parent dirs) | — |
+| `write_lines(path, lines)` | Write lines to file (preferred for code — avoids escaping) | — |
 | `run_command(command)` | Shell command | 30s |
 | `call_claude(prompt)` | Delegate to Claude CLI subprocess | 120s |
 | `web_search(query)` | DuckDuckGo Lite search (no API key) | 15s |
@@ -173,12 +174,12 @@ Designs optimal agent topology for any task description. Supports 4 patterns: se
 ### SkillPipeline (v1.5)
 ```
 Scanner (project scan → project_scan.json)
-  └─ 4 parallel detectors (Python, JS, Infra, ConfigDocs)
+  └─ 4 parallel detectors (DomainExpertise, TechnicalCraft, Methodology, Rigor)
       └─ Aggregator (deduplicate, categorize)
           └─ Writer → skills.json + skills_report.md
 ```
 
-Scans a project directory and produces a structured skill inventory with proficiency levels (detected/used/extensively-used). Domain-parallel detection means each detector specializes in its ecosystem.
+Artifact-agnostic skill detection that works across any project type — software, research papers, documentation. Each detector examines the artifact from a different dimension, with proficiency inferred from evidence depth rather than indicator counting.
 
 **Verified on this repo:** 33 skills across 11 categories — langchain (extensively-used), DeepSeek API (extensively-used), LangGraph (used), ThreadPoolExecutor (used), DuckDuckGo (used), argparse (used), subprocess (extensively-used), Claude CLI (extensively-used), urllib (extensively-used), pytest (detected), dataclasses (extensively-used), etc.
 
@@ -298,7 +299,7 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 ├── main.py                   # CLI entry point (7 modes)
 ├── agent.py                  # Autonomous agent loop + AgentRole ABC + CheckpointManager
 ├── llm.py                    # DeepSeek + Claude CLI LLM backends
-├── utils.py                  # Shared helpers (extract_json_object, extract_json_array, safe_read)
+├── utils.py                  # Shared helpers (find_matching_delimiter, extract_json_object, extract_json_array, safe_read, scan_review_verdict, serialize_messages)
 ├── claude_config.py          # Claude CLI env injection
 ├── claude_env_sample.json    # Claude CLI credentials (git-ignored)
 ├── claude_env_sample.example.json  # Template for credentials
@@ -306,7 +307,7 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 ├── tools_config.json         # Canonical per-role tool assignments
 ├── CLAUDE.md                 # Project documentation for AI assistants
 ├── .python-version           # Python 3.11
-├── pipeline/                 # Pipeline classes (8 files)
+├── pipeline/                 # Pipeline classes (9 files)
 │   ├── __init__.py           # Re-exports all pipeline classes
 │   ├── base.py               # BasePipeline + shared helpers (topological sort, parallel agents)
 │   ├── coder.py              # CoderPipeline + CoderRole + ReviewerRole
@@ -318,7 +319,7 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 │   └── self_evolution.py     # SelfEvolutionPipeline (analyzer → planner → coder ↔ reviewer → writer)
 ├── tools/                    # Tool system (4 files)
 │   ├── __init__.py           # Re-exports + auto-applies feature tools
-│   ├── registry.py           # ToolSpec dataclass + ToolRegistry (23 role methods)
+│   ├── registry.py           # ToolSpec dataclass + ToolRegistry (28 role methods)
 │   ├── functions.py          # 8 tool implementations + TOOL_MAP
 │   └── feature_tools.py      # Feature pipeline tool methods
 ├── self_evolution/           # Self-Evolution agent roles (5 files, v1.8)
