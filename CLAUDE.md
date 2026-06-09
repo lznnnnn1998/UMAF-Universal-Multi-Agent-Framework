@@ -1,6 +1,6 @@
-# Universal Multi-Agent Framework (UMAF) v1.7
+# Universal Multi-Agent Framework (UMAF) v1.8
 
-LangChain + DeepSeek multi-agent framework with six pipelines and two backends. OOP architecture with 5-layer class hierarchy.
+LangChain + DeepSeek multi-agent framework with seven pipelines and two backends. OOP architecture with 5-layer class hierarchy.
 
 ## Architecture
 
@@ -14,7 +14,12 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
         ├── CoderPPPipeline     ├── ResearchWorkerRole
         ├── TopologyPipeline    ├── ResearchDecomposerRole
         ├── SkillPipeline       ├── ResearchReviewerRole
-        └── FeaturePipeline     ├── WriterRole
+        ├── FeaturePipeline     ├── WriterRole
+        └── SelfEvolutionPipeline ├── SelfEvolutionAnalyzerRole
+                                ├── SelfEvolutionPlannerRole
+                                ├── SelfEvolutionCoderRole
+                                ├── SelfEvolutionReviewerRole
+                                ├── SelfEvolutionWriterRole
                                 ├── FeatureScannerRole
                                 ├── FeaturePlannerRole
                                 ├── FeatureCoderRole
@@ -31,7 +36,7 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
                                 ├── RigorDetectorRole
                                 ├── SkillAggregatorRole
                                 └── SkillReportWriterRole
-                                (23 roles total)
+                                (32 roles total)
 ```
 
 ## Modules
@@ -43,7 +48,7 @@ main.py → pipeline/       → agent.py → llm.py        (all pipelines)
 Factory: `get_llm(backend)`.
 
 ### `tools/` — Eight tools + ToolRegistry
-`read_file`, `write_file`, `write_lines` (preferred for code — avoids multi-line string escaping), `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 18 role-specific methods, all defaults empty — tools come from config), `functions.py` (8 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods). `__init__.py` re-exports and auto-applies feature tools — no duplicated tool definitions.
+`read_file`, `write_file`, `write_lines` (preferred for code — avoids multi-line string escaping), `run_command` (30s timeout), `call_claude` (120s, env-injected), `web_search` (DuckDuckGo Lite, no API key), `web_fetch` (urllib, 20s timeout), `download_file` (urllib, 30s timeout, saves to local file). Modular package: `registry.py` (ToolSpec + ToolRegistry with 23 role-specific methods, all defaults empty — tools come from config), `functions.py` (8 implementations + TOOL_MAP), `feature_tools.py` (5 feature pipeline role methods, auto-applied at import). `__init__.py` re-exports — no duplicated tool definitions.
 
 ### `tools_config.json` — Canonical tool assignments (v1.7)
 Single source of truth for per-role tool assignments. Auto-loaded by `main.py` at startup. Maps pipeline → role → tool list. Also defines per-tool timeout overrides. `--tools-config` flag overrides with a custom file. All `ToolRegistry.*_tools()` methods return `[]` by default — `set_tool_config()` must be called first. Metadata keys (`__about__`, `_description`, etc.) are stripped on load. `__global__` key provides fallback for unlisted roles.
@@ -55,7 +60,7 @@ Single source of truth for per-role tool assignments. Auto-loaded by `main.py` a
 - **Conversation logger**: `_save_agent_log()` writes to `agent_log/<name>_<timestamp>.json`.
 - **Pre-fetch layer**: For `claude_cli` workers, arxiv.org content is pre-downloaded at the framework level (via `download_file`) before the agent runs, avoiding Claude Code's cc-switch domain verification.
 
-### `pipeline/` — Six pipelines
+### `pipeline/` — Seven pipelines
 **`BasePipeline`**: Output dir management, double-check confirmation, `_topological_levels()`, `_run_workers_with_deps()`, `_run_parallel_agents()`.
 
 **`CoderPipeline`**: Coder (all 6 tools) → Reviewer (no write_file). Max 5 cycles. Coder resets `review_passed=False` each run.
@@ -101,25 +106,37 @@ scanner → planner → coder ↔ reviewer (max 5 cycles) → writer → END
 - **reviewer.py**: `FeatureReviewerRole` — validates implementation via REVIEW_PASSED/REVIEW_FAILED token scanning (same pattern as CoderPipeline)
 - **writer.py**: `FeatureReportWriterRole` — produces `feature_report.md`
 
+**`SelfEvolutionPipeline`** (v1.8):
+```
+analyzer → planner → coder ↔ reviewer (max 3 iterations) → writer → END
+```
+- **analyzer.py**: `SelfEvolutionAnalyzerRole` — scans UMAF codebase and agent logs, produces `analysis_report.json` with improvement opportunities
+- **planner.py**: `SelfEvolutionPlannerRole` — creates `implementation_plan.json` from analysis findings
+- **coder.py**: `SelfEvolutionCoderRole` — implements improvements, detects changed files via git diff or mtime
+- **reviewer.py**: `SelfEvolutionReviewerRole` — verifies changes by running tests, scans for REVIEW_PASSED/REVIEW_FAILED tokens
+- **writer.py**: `SelfEvolutionWriterRole` — produces `evolution_report.md`
+- **Safety**: operates in current git branch; all changes revertible with `git checkout -- .`
+
 ### `main.py` — Entry point
 ```
-python3 main.py [--mode coder|research|coderpp|topology|skill|feature] [--backend deepseek|claude_cli] [--working-dir PATH] [--tools-config PATH] [--target PATH] [--clean] [--yes] "requirement"
+python3 main.py [--mode coder|research|coderpp|topology|skill|feature|self_evolution] [--backend deepseek|claude_cli] [--working-dir PATH] [--tools-config PATH] [--target PATH] [--clean] [--yes] "requirement"
 ```
 - `--tools-config` defaults to `tools_config.json` in repo root
-- `--target` specifies directory/file to analyze (skill/feature/topology modes)
+- `--target` specifies directory/file to analyze (skill/feature/topology/self_evolution modes)
 
 ### `claude_config.py` — Env setup
 Loads `claude_env_sample.json` (12 env vars). Falls back to `.example.json`. `merge_claude_env()` merges with `os.environ`.
 
 ### Directories
-- `pipeline/`: base, coder, research, coderpp, topology, skill, feature (6 pipeline classes + BasePipeline)
-- `tools/`: registry, functions, feature_tools (ToolSpec + 7 tool implementations + 18+ role methods)
+- `pipeline/`: base, coder, research, coderpp, topology, skill, feature, self_evolution (7 pipeline classes + BasePipeline)
+- `tools/`: registry, functions, feature_tools (ToolSpec + 7 tool implementations + 23 role methods)
+- `self_evolution/`: analyzer, planner, coder, reviewer, writer (5 agent roles)
 - `feature/`: scanner, planner, coder, reviewer, writer (5 agent roles)
 - `research/`: head_agent, worker_agent, reviewer_agent, writer (4 agent roles)
 - `coderpp/`: head_agent, worker_agent, reviewer_agent, organizer (4 agent roles)
 - `topology/`: analyzer, designer, evaluator, writer (4 agent roles)
 - `skill/`: scanner, detectors, aggregator, writer (4 agent roles)
-- `test/`: test_smoke, test_topology, test_skill, test_feature_v2 (99 tests)
+- `test/`: 10 test files (379 tests) — conftest, test_smoke, test_pipeline, test_coder, test_research, test_coderpp, test_topology, test_skill, test_feature, test_self_evolution
 - `utils.py`: shared helpers (extract_json_object, extract_json_array, safe_read, _PROFICIENCY_SCORES)
 
 ## Setup
@@ -137,7 +154,7 @@ pip install -r requirements.txt
 - `AgentRole` ABC + `ToolRegistry` centralization (no duplicated tool definitions)
 - Tool metadata + TOOL_MAP separation; explicit `working_dir` (no global state)
 - Tool name translation for Claude CLI (Python names → native names via regex)
-- Tool assignment driven by `tools_config.json` (v1.7): no hardcoded defaults in code; all 18+ role methods return `[]` — `set_tool_config()` is the single source of truth
+- Tool assignment driven by `tools_config.json` (v1.7): no hardcoded defaults in code; all 23 role methods return `[]` — `set_tool_config()` is the single source of truth
 - Backend-aware task generation (v1.2): no nested `claude -p` for claude_cli workers
 - **Python >= 3.11**: `X | None` syntax, no deprecated `Optional[X]` or `Union[X, Y]`
 - Fallbacks at every stage; DuckDuckGo Lite (no API key); all agents logged for debugging
@@ -156,6 +173,16 @@ pip install -r requirements.txt
 - CoderPP workers can get stuck on TaskOutput framework calls when modifying pipeline.py
 
 ## Version History
+
+### v1.8 (June 2026) — Self-Evolution Pipeline + Test Enhancement
+- **Self-Evolution Pipeline**: 7-node graph (analyzer → planner → coder ↔ reviewer → writer). UMAF analyzes its own codebase and agent logs, identifies improvement opportunities, implements changes, verifies with tests, and documents results. 5 AgentRoles in `self_evolution/`. MAX_ITERATIONS=3 for coder↔reviewer loop.
+- **ToolRegistry**: 5 new classmethods (`self_evolution_analyzer_tools()` through `self_evolution_writer_tools()`) in `registry.py`. Removed redundant `tools/self_evolution_tools.py` (methods were duplicated).
+- **tools_config.json**: Added `self_evolution` section with per-role tool assignments (analyzer, planner, coder, reviewer, writer).
+- **main.py**: 7 modes — coder, research, coderpp, topology, skill, feature, self_evolution.
+- **Test enhancement**: 175 new behavioral tests across test_coder.py (14→27), test_research.py (21→62), test_coderpp.py (26→58). Tests now verify graph node behavior, parse_result logic, flow routing, fallback methods, and resume state reconstruction — not just structure.
+- **New tests**: test_self_evolution.py (49 tests), test_pipeline.py, test_coder.py, test_coderpp.py, test_research.py, test_feature.py, conftest.py.
+- **Removed redundant files**: `_run_*.py` temporary test runners, `_test_hang.py`, `review_verdict.txt`.
+- **Verified**: 379/379 tests pass.
 
 ### v1.7 (June 2026) — tools_config.json + Codebase Cleanup
 - **tools_config.json**: Single source of truth for per-role tool assignments. Auto-loaded by `main.py`. `--tools-config` overrides. All `ToolRegistry.*_tools()` defaults changed from hardcoded lists to `[]` — `set_tool_config()` must be called first. Metadata keys stripped on load. `__global__` fallback support.

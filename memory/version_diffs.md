@@ -1,10 +1,79 @@
 ---
 name: version-diffs
-description: "Complete changelog: v1.0→v1.1 (12 bug fixes), v1.2 (backend-aware), v1.3 (Python 3.11), v1.4 (OOP+pipeline), v1.4.1 (8 bug fixes), v1.5 (Topology+Skill), v1.6 (Feature+modular)"
+description: "Complete changelog: v1.0→v1.8 (12+8 bug fixes, backend-aware agents, Python 3.11, OOP, 7 pipelines, Self-Evolution, 379 tests)"
 metadata: 
   node_type: memory
   type: project
   originSessionId: 9c942f95-5fb5-4276-8e53-c16059ca5e31
+---
+
+## v1.8 (June 2026) — Self-Evolution Pipeline + Test Enhancement
+
+**Why:** UMAF should be able to analyze and improve itself. Tests only verified syntax/structure, not actual behavior.
+
+### Self-Evolution Pipeline
+- 7-node graph: analyzer → planner → coder ↔ reviewer (max 3 iterations) → writer → END
+- 5 AgentRoles in `self_evolution/`: `SelfEvolutionAnalyzerRole`, `SelfEvolutionPlannerRole`, `SelfEvolutionCoderRole`, `SelfEvolutionReviewerRole`, `SelfEvolutionWriterRole`
+- `SelfEvolutionPipeline(BasePipeline)` in `pipeline/self_evolution.py`
+- `SelfEvolutionState` TypedDict (12 fields)
+- 5 new ToolRegistry classmethods (`self_evolution_analyzer_tools()` through `self_evolution_writer_tools()`) in `registry.py`
+- Removed redundant `tools/self_evolution_tools.py` (methods were duplicated in registry.py)
+- `tools_config.json`: Added `self_evolution` section with per-role tool assignments
+- `main.py`: 7 modes — coder, research, coderpp, topology, skill, feature, self_evolution
+- Safety: Operates in current git branch; all changes revertible
+
+### Test Enhancement (175 new behavioral tests)
+- **test_coder.py** (14→27): Graph node behavior (file scanning, verdict detection, reverse-scan, router), build_task truncation, full loop simulation
+- **test_research.py** (21→62): `parse_result` for all 3 roles, `_extract_json_array` bracket counting, flow routing, resume state reconstruction
+- **test_coderpp.py** (26→58): `parse_result` for decomposer/worker/reviewer/observer, worker file scanning, review.md authoritative override, flow routing, resume with ENVIRONMENT.md
+- **test_self_evolution.py**: 49 new tests (5 roles, pipeline, graph nodes)
+- New test files: test_pipeline.py, test_coder.py, test_coderpp.py, test_research.py, test_feature.py, conftest.py
+- All tests now verify functionality and expected behavior, not just syntax/structure
+
+### Cleanup
+- Removed redundant files: `_run_all_tests.py`, `_run_fast_tests.py`, `_run_tests.py`, `_run_timed_tests.py`, `_test_hang.py`, `review_verdict.txt`
+- Removed `tools/self_evolution_tools.py` (duplicate of registry.py methods)
+- Cleaned up `tools/__init__.py` (removed self_evolution_tools import)
+
+### Verified
+- 379/379 tests pass
+- 7 pipelines, 32 concrete AgentRole subclasses (+ 3 abstract = 35 total)
+- 8 tools, 23 ToolRegistry role methods
+
+---
+
+## v1.7 (June 2026) — tools_config.json + Codebase Cleanup
+
+**Why:** Tool assignments were hardcoded across 18+ role methods. ~200 lines of duplicated utility code. Dead imports and unused functions.
+
+### tools_config.json
+- Single source of truth for per-role tool assignments
+- Auto-loaded by `main.py` at startup
+- `--tools-config` flag overrides with custom file
+- All `ToolRegistry.*_tools()` defaults changed from hardcoded lists to `[]` — `set_tool_config()` must be called first
+- Metadata keys (`__about__`, `_description`, etc.) stripped on load
+- `__global__` key provides fallback for unlisted roles
+
+### Code Deduplication
+- 5 `_extract_json_object` copies consolidated into `utils.py`
+- 2 `_extract_json_array` copies moved to `utils.py`
+- 4 `sys.path.insert` hacks removed from `skill/`
+- `_PROFICIENCY_SCORES` centralized (was 5 inline copies)
+- Added `extract_json_array()` to `utils.py`
+
+### Dead Code Removal
+- `run_agent()`, `BaseAgent._checkpoint_path()`, `_checkpoint_path()` from `agent.py`
+- `_load_config()`, `_claude_env`, `get_claude_env()` from `claude_config.py`
+- Unused imports from `coderpp/head_agent.py`, `research/head_agent.py`, `pipeline/__init__.py`
+
+### Backend-Agnostic Tool Defaults
+- Removed backend-differentiated tool lists in `research_decomposer_tools()`
+- Removed "do NOT search the web" prompt restrictions
+- Tools are now purely config-driven
+
+### Verified
+- 99/99 tests pass
+
 ---
 
 ## v1.6.1 (June 2026) — Dependency Injection Fixes Across 3 Pipelines

@@ -1,109 +1,236 @@
 {
-  "__about__": "UMAF Tools Configuration — single source of truth for all role tool assignments. This file is auto-loaded by main.py. Use --tools-config to point at a custom file instead.",
+  "__about__": "UMAF Tools Configuration \u2014 single source of truth for all role tool assignments. This file is auto-loaded by main.py. Use --tools-config to point at a custom file instead.",
   "__format__": "Top-level keys are pipeline names. Each pipeline maps role names to lists of tool names. Role names match case-insensitively against ToolRegistry method suffixes (e.g. 'worker' matches both research_worker_tools and coderpp_worker_tools). A '__global__' key applies to ALL pipelines as fallback.",
-
   "__tools_reference__": {
     "_description": "All 8 available tools. Use these names in role tool lists below.",
-
     "read_file": {
       "description": "Read contents of a file at the given path.",
-      "parameters": {"file_path": "str (required)"}
+      "parameters": {
+        "file_path": "str (required)"
+      }
     },
     "write_file": {
       "description": "Write content to a file. Creates parent directories as needed. Best for single-string content.",
-      "parameters": {"file_path": "str (required)", "content": "str (required)"}
+      "parameters": {
+        "file_path": "str (required)",
+        "content": "str (required)"
+      }
     },
     "write_lines": {
-      "description": "Write a list of lines to a file. Preferred over write_file for code — each line is a separate string, avoiding multi-line string escaping issues.",
-      "parameters": {"file_path": "str (required)", "lines": "list[str] (required)"}
+      "description": "Write a list of lines to a file. Preferred over write_file for code \u2014 each line is a separate string, avoiding multi-line string escaping issues.",
+      "parameters": {
+        "file_path": "str (required)",
+        "lines": "list[str] (required)"
+      }
     },
     "run_command": {
       "description": "Run a shell command and return stdout + stderr. Use for testing, file listing, pip install, git operations.",
-      "parameters": {"command": "str (required)"},
+      "parameters": {
+        "command": "str (required)"
+      },
       "default_timeout_s": 30
     },
     "call_claude": {
-      "description": "Call Claude Code CLI for a complex reasoning subtask. Spawns a nested claude -p process. Use sparingly — only for tasks that need deep reasoning.",
-      "parameters": {"prompt": "str (required)"},
+      "description": "Call Claude Code CLI for a complex reasoning subtask. Spawns a nested claude -p process. Use sparingly \u2014 only for tasks that need deep reasoning.",
+      "parameters": {
+        "prompt": "str (required)"
+      },
       "default_timeout_s": 120
     },
     "web_search": {
       "description": "Search the web via DuckDuckGo Lite. Returns titles, URLs, and snippets. No API key needed.",
-      "parameters": {"query": "str (required)", "max_results": "int (optional, default 10, max 20)"},
+      "parameters": {
+        "query": "str (required)",
+        "max_results": "int (optional, default 10, max 20)"
+      },
       "default_timeout_s": 15
     },
     "web_fetch": {
       "description": "Fetch content from a URL via urllib (bypasses Claude Code network sandbox). Use for reading papers, articles, documentation pages.",
-      "parameters": {"url": "str (required)", "max_chars": "int (optional, default 12000, max 20000)"},
+      "parameters": {
+        "url": "str (required)",
+        "max_chars": "int (optional, default 12000, max 20000)"
+      },
       "default_timeout_s": 20
     },
     "download_file": {
       "description": "Download a URL to a local file via urllib. Use for arxiv.org PDFs, datasets, or any binary/content files that need local access.",
-      "parameters": {"url": "str (required)", "output_path": "str (required)"},
+      "parameters": {
+        "url": "str (required)",
+        "output_path": "str (required)"
+      },
       "default_timeout_s": 30
     }
   },
-
   "__timeouts__": {
     "_description": "Override per-tool timeouts in seconds. Omitted tools keep their defaults listed above.",
     "call_claude": 600,
     "web_fetch": 30
   },
-
   "__global__": {
     "_description": "Applied to ALL pipelines as fallback when a pipeline-specific section doesn't define a role. Leave empty to require explicit per-pipeline definitions."
   },
-
   "research": {
-    "_description": "Research Pipeline: head decomposes topic → workers research in parallel → reviewer scores → writer generates LaTeX report.",
-
-    "decomposer": ["read_file", "write_file", "run_command", "web_search"],
-    "worker": ["read_file", "write_file", "run_command", "call_claude", "web_search", "web_fetch", "download_file"],
-    "reviewer": ["read_file", "write_file", "web_search", "web_fetch"],
-    "writer": ["read_file", "write_file", "write_lines"]
+    "_description": "Research Pipeline: head decomposes topic \u2192 workers research in parallel \u2192 reviewer scores \u2192 writer generates LaTeX report.",
+    "decomposer": [
+      "read_file",
+      "write_file",
+      "run_command",
+      "web_search"
+    ],
+    "worker": [
+      "read_file",
+      "write_file",
+      "run_command",
+      "call_claude",
+      "web_search",
+      "web_fetch",
+      "download_file"
+    ],
+    "reviewer": [
+      "read_file",
+      "write_file",
+      "web_search",
+      "web_fetch"
+    ],
+    "writer": [
+      "read_file",
+      "write_file",
+      "write_lines"
+    ]
   },
-
   "coder": {
-    "_description": "Coder Pipeline: coder implements → reviewer validates → loop until pass (max 5 cycles).",
-
-    "coder": ["read_file", "write_file", "run_command", "call_claude", "web_search", "web_fetch"],
-    "reviewer": ["read_file", "run_command", "call_claude", "web_search", "web_fetch"]
+    "_description": "Coder Pipeline: coder implements \u2192 reviewer validates \u2192 loop until pass (max 5 cycles).",
+    "coder": [
+      "read_file",
+      "write_file",
+      "run_command",
+      "call_claude",
+      "web_search",
+      "web_fetch"
+    ],
+    "reviewer": [
+      "read_file",
+      "run_command",
+      "call_claude",
+      "web_search",
+      "web_fetch"
+    ]
   },
-
   "coderpp": {
-    "_description": "CoderPP Pipeline: head decomposes → workers implement in parallel → reviewer validates → organizer assembles final output.",
-
-    "decomposer": ["read_file", "write_file", "run_command"],
-    "worker": ["read_file", "write_file", "write_lines", "run_command"],
-    "reviewer": ["read_file", "write_file", "write_lines", "run_command"],
-    "organizer": ["read_file", "write_file", "write_lines", "run_command"]
+    "_description": "CoderPP Pipeline: head decomposes \u2192 workers implement in parallel \u2192 reviewer validates \u2192 organizer assembles final output.",
+    "decomposer": [
+      "read_file",
+      "write_file",
+      "run_command"
+    ],
+    "worker": [
+      "read_file",
+      "write_file",
+      "write_lines",
+      "run_command"
+    ],
+    "reviewer": [
+      "read_file",
+      "write_file",
+      "write_lines",
+      "run_command"
+    ],
+    "organizer": [
+      "read_file",
+      "write_file",
+      "write_lines",
+      "run_command"
+    ]
   },
-
   "topology": {
-    "_description": "Topology Pipeline: analyzer assesses task complexity → designer proposes candidate topologies → evaluator scores them → writer produces spec + report.",
-
-    "analyzer": ["read_file", "write_file"],
-    "designer": ["read_file", "write_file"],
-    "evaluator": ["read_file", "write_file"],
-    "writer": ["write_file"]
+    "_description": "Topology Pipeline: analyzer assesses task complexity \u2192 designer proposes candidate topologies \u2192 evaluator scores them \u2192 writer produces spec + report.",
+    "analyzer": [
+      "read_file",
+      "write_file"
+    ],
+    "designer": [
+      "read_file",
+      "write_file"
+    ],
+    "evaluator": [
+      "read_file",
+      "write_file"
+    ],
+    "writer": [
+      "write_file"
+    ]
   },
-
   "skill": {
-    "_description": "Skill Pipeline: scanner classifies artifact → 4 parallel detectors analyze skill dimensions → aggregator merges → writer produces skills.json + report.",
-
-    "scanner": ["read_file", "write_file", "run_command"],
-    "detector": ["read_file", "write_file", "run_command"],
-    "aggregator": ["read_file", "write_file"],
-    "writer": ["read_file", "write_file"]
+    "_description": "Skill Pipeline: scanner classifies artifact \u2192 4 parallel detectors analyze skill dimensions \u2192 aggregator merges \u2192 writer produces skills.json + report.",
+    "scanner": [
+      "read_file",
+      "write_file",
+      "run_command"
+    ],
+    "detector": [
+      "read_file",
+      "write_file",
+      "run_command"
+    ],
+    "aggregator": [
+      "read_file",
+      "write_file"
+    ],
+    "writer": [
+      "read_file",
+      "write_file"
+    ]
   },
-
   "feature": {
-    "_description": "Feature Pipeline: scanner surveys project → planner creates implementation plan → coder implements ↔ reviewer validates (max 5 cycles) → writer reports.",
-
-    "scanner": ["read_file", "write_file", "run_command"],
-    "planner": ["read_file", "write_file"],
-    "coder": ["read_file", "write_file", "write_lines", "run_command"],
-    "reviewer": ["read_file", "run_command"],
-    "writer": ["write_file"]
+    "_description": "Feature Pipeline: scanner surveys project \u2192 planner creates implementation plan \u2192 coder implements \u2194 reviewer validates (max 5 cycles) \u2192 writer reports.",
+    "scanner": [
+      "read_file",
+      "write_file",
+      "run_command"
+    ],
+    "planner": [
+      "read_file",
+      "write_file"
+    ],
+    "coder": [
+      "read_file",
+      "write_file",
+      "write_lines",
+      "run_command"
+    ],
+    "reviewer": [
+      "read_file",
+      "run_command"
+    ],
+    "writer": [
+      "write_file"
+    ]
+  },
+  "self_evolution": {
+    "_description": "Self-Evolution Pipeline: analyzer scans codebase -> planner creates plan -> coder implements <-> reviewer validates (max 3 cycles) -> writer reports.",
+    "analyzer": [
+      "read_file",
+      "write_file",
+      "run_command"
+    ],
+    "planner": [
+      "read_file",
+      "write_file"
+    ],
+    "coder": [
+      "read_file",
+      "write_file",
+      "write_lines",
+      "run_command"
+    ],
+    "reviewer": [
+      "read_file",
+      "write_file",
+      "run_command"
+    ],
+    "writer": [
+      "write_file"
+    ]
   }
 }

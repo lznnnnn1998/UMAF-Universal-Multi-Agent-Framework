@@ -16,9 +16,9 @@ metadata:
 | Pipeline time | 35min | 9min | 35min | — | 12min | 7.4min | — | — | — |
 | LaTeX output | 3.6KB | 40KB | 41KB | — | generated | 60KB | — | — | — |
 | Skills detected | — | — | — | — | — | — | — | 33 (11 categories) | 21 (claude_cli) |
-| Unit/smoke tests | 0 | 0 | 0 | 8/8 | 8/8 | 8/8 | 15/15 | 42/42 | **97/97** |
-| Python | 3.9 | 3.9 | 3.9 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 |
-| Pipelines | 2 | 2 | 2 | 2 | 2 | 3 | 3 | 5 | **6** |
+| Unit/smoke tests | 0 | 0 | 0 | 8/8 | 8/8 | 8/8 | 15/15 | 42/42 | 97/97 | 99/99 | **379/379** |
+| Python | 3.9 | 3.9 | 3.9 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 |
+| Pipelines | 2 | 2 | 2 | 2 | 2 | 3 | 3 | 5 | 6 | 6 | **7** |
 
 ## Critical Bugs Fixed (Across All Versions)
 
@@ -96,6 +96,40 @@ metadata:
 - All 6 pipelines pass end-to-end with claude_cli backend
 - All 6 pipelines pass end-to-end with deepseek backend
 - 97 tests pass (42 legacy + 55 feature)
+
+## New in v1.7
+
+### tools_config.json + Codebase Cleanup
+- **tools_config.json**: Single source of truth for per-role tool assignments. Auto-loaded by `main.py`. `--tools-config` overrides. All `ToolRegistry.*_tools()` defaults changed from hardcoded lists to `[]` — `set_tool_config()` must be called first. `__global__` fallback support.
+- **Code deduplication**: Removed ~200 lines — 5 `_extract_json_object` copies consolidated into `utils.py`, 2 `_extract_json_array` copies moved, 4 `sys.path.insert` hacks removed from `skill/`, `_PROFICIENCY_SCORES` centralized.
+- **Dead code removal**: `run_agent()`, `_checkpoint_path()`, `_load_config()`, unused imports.
+- **Backend-agnostic tool defaults**: Removed backend-differentiated tool lists, removed "do NOT search the web" prompt restrictions.
+- **Verified**: 99/99 tests pass.
+
+## New in v1.8
+
+### Self-Evolution Pipeline
+- 7-node graph: analyzer → planner → coder ↔ reviewer (max 3 iterations) → writer → END
+- 5 new AgentRoles in `self_evolution/`: `SelfEvolutionAnalyzerRole`, `SelfEvolutionPlannerRole`, `SelfEvolutionCoderRole`, `SelfEvolutionReviewerRole`, `SelfEvolutionWriterRole`
+- Analyzer scans UMAF codebase + agent logs for improvement opportunities
+- Planner creates implementation plan from analysis findings
+- Coder implements changes, detects via git diff or mtime
+- Reviewer verifies with test suite, REVIEW_PASSED/REVIEW_FAILED token scanning
+- Writer produces evolution_report.md
+- 5 new ToolRegistry classmethods in `registry.py` (removed redundant `tools/self_evolution_tools.py`)
+- `tools_config.json`: Added self_evolution section
+
+### Test Enhancement (175 new behavioral tests)
+- test_coder.py: 14→27 (graph node behavior, verdict detection, full loop simulation)
+- test_research.py: 21→62 (parse_result for all 3 roles, JSON parsing, flow routing, resume state)
+- test_coderpp.py: 26→58 (parse_result, worker file scanning, review.md override, resume)
+- test_self_evolution.py: 49 new tests (5 roles, pipeline, graph nodes)
+- New test files: test_pipeline.py, test_coder.py, test_coderpp.py, test_research.py, test_feature.py, conftest.py
+
+### Verified
+- 379/379 tests pass
+- 7 pipelines, 32 concrete AgentRole subclasses, 8 tools, 23 ToolRegistry role methods
+- Removed redundant files: `_run_*.py` temporary test runners, `_test_hang.py`, `review_verdict.txt`, `tools/self_evolution_tools.py`
 
 ### Related
 [[version_diffs]], [[architecture_progress]], [[oop_refactoring]]

@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 
 from pipeline import (CoderPipeline, ResearchPipeline, CoderPPPipeline,
-                       TopologyPipeline, SkillPipeline, FeaturePipeline)
+                       TopologyPipeline, SkillPipeline, FeaturePipeline,
+                       SelfEvolutionPipeline)
 from tools import ToolRegistry
 
 PIPELINES = {
@@ -14,6 +15,7 @@ PIPELINES = {
     "topology": TopologyPipeline,
     "skill": SkillPipeline,
     "feature": FeaturePipeline,
+    "self_evolution": SelfEvolutionPipeline,
 }
 
 
@@ -75,7 +77,7 @@ def main():
     )
     parser.add_argument(
         "--target", "-t", default=None,
-        help="Directory or file to analyze (skill/feature/topology modes). "
+        help="Directory or file to analyze (skill/feature/topology/self_evolution modes). "
              "This is WHAT you want to analyze, distinct from --working-dir "
              "which is WHERE outputs go.",
     )
@@ -83,12 +85,12 @@ def main():
 
     requirement = args.requirement
     if not requirement:
-        # For skill/topology/feature modes, --target makes the text
+        # For skill/topology/feature/self_evolution modes, --target makes the text
         # requirement optional.
-        if args.target and args.mode in ("skill", "topology", "feature"):
+        if args.target and args.mode in ("skill", "topology", "feature", "self_evolution"):
             requirement = args.target
         elif sys.stdin.isatty():
-            prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement", "feature": "Enter feature description"}
+            prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement", "feature": "Enter feature description", "self_evolution": "Enter self-evolution goal"}
             requirement = input(f"{prompt_map.get(args.mode, 'Enter requirement')}: ").strip()
         else:
             requirement = sys.stdin.read().strip()

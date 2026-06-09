@@ -12,7 +12,7 @@ from .functions import (
     web_fetch,
     download_file,
 )
-from .feature_tools import apply_to_tool_registry
+from .feature_tools import apply_to_tool_registry as apply_feature_tools
 
 # Auto-apply feature tool methods to ToolRegistry on first import
-apply_to_tool_registry(ToolRegistry)
+apply_feature_tools(ToolRegistry)

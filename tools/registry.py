@@ -22,19 +22,12 @@ class ToolRegistry:
     restrict or customize which tools each agent role receives per pipeline.
     """
 
-    # --- Tool implementations (same functions, accessible as class attribute) ---
-    TOOL_MAP: dict[str, Callable] = {}  # populated after function definitions
+    TOOL_MAP: dict[str, Callable] = {}
 
-    # Module-level override: set by set_tool_config() before pipeline runs.
-    # Nested dict: {pipeline_name: {role_name: [tool_name_str, ...]}}
     _tool_overrides: dict[str, dict[str, list[str]]] = {}
 
-    # Per-tool timeout overrides in seconds. Keys are tool function names.
-    # Populated from the __timeouts__ key in the tools config JSON::
-    #     {"__timeouts__": {"call_claude": 300, "web_fetch": 30}}
     _tool_timeouts: dict[str, int] = {}
 
-    # Mapping from human-readable JSON names to ToolSpec class attributes.
     _TOOL_NAME_MAP: dict[str, str] = {
         "read_file": "READ_FILE",
         "write_file": "WRITE_FILE",
@@ -48,36 +41,12 @@ class ToolRegistry:
 
     @classmethod
     def set_tool_config(cls, config: dict[str, dict[str, list[str]]]) -> None:
-        """Apply a tool configuration loaded from a JSON file.
-
-        The config dict maps pipeline names to role→tool-list dicts.
-        Keys starting with ``__`` or ``_`` are treated as metadata/documentation
-        and stripped before storing. An optional ``__timeouts__`` key sets
-        per-tool timeouts in seconds::
-
-            {
-                "__timeouts__": {"call_claude": 300, "web_fetch": 30},
-                "research": {
-                    "decomposer": ["read_file", "run_command"],
-                    "worker": ["read_file", "write_file", "call_claude"],
-                    "reviewer": ["read_file", "write_file"],
-                    "writer": ["read_file", "write_file", "write_lines"]
-                }
-            }
-
-        Role names are matched case-insensitively against the classmethod
-        suffixes (e.g. "worker" matches ``research_worker_tools``,
-        ``coderpp_worker_tools``, and ``writer`` matches ``writer_tools``).
-        """
-        # Extract optional __timeouts__ section
         timeout_config = config.pop("__timeouts__", None)
         if isinstance(timeout_config, dict):
             for tool_name, seconds in timeout_config.items():
                 if isinstance(seconds, (int, float)) and seconds > 0:
                     cls._tool_timeouts[tool_name] = int(seconds)
 
-        # Strip metadata/documentation keys (__about__, _description, etc.)
-        # from both top-level pipeline keys and nested role maps.
         def _is_meta(k: str) -> bool:
             return k.startswith("_") and k != "__global__"
 
@@ -88,17 +57,14 @@ class ToolRegistry:
 
     @classmethod
     def _apply_override(cls, pipeline: str, role: str, defaults: list) -> list:
-        """Return the override tool list for *role* in *pipeline*, or *defaults*."""
         overrides = cls._tool_overrides
         if not overrides:
             return defaults
 
-        # Check pipeline-specific override first, then global
         for key in (pipeline, "__global__"):
             role_map = overrides.get(key, {})
             if not role_map:
                 continue
-            # Case-insensitive role match
             for rname, tool_names in role_map.items():
                 if rname.lower() in role.lower():
                     specs = []
@@ -110,7 +76,6 @@ class ToolRegistry:
 
         return defaults
 
-    # --- Individual tool specs ---
     READ_FILE = ToolSpec(
         name="read_file",
         description="Read contents of a file at the given path.",
@@ -151,10 +116,6 @@ class ToolRegistry:
         description="Download a URL to a local file via urllib. Bypasses Claude Code network sandbox.",
         parameters={"url": "str", "output_path": "str"},
     )
-
-    # --- Role-specific tool lists ---
-    # All tools are defined in tools_config.json. Defaults here are empty;
-    # set_tool_config() must be called before any pipeline runs.
 
     @classmethod
     def coder_tools(cls) -> list[ToolSpec]:
@@ -229,8 +190,27 @@ class ToolRegistry:
         return cls._apply_override("skill", "writer", [])
 
     @classmethod
+    def self_evolution_analyzer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("self_evolution", "analyzer", [])
+
+    @classmethod
+    def self_evolution_planner_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("self_evolution", "planner", [])
+
+    @classmethod
+    def self_evolution_coder_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("self_evolution", "coder", [])
+
+    @classmethod
+    def self_evolution_reviewer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("self_evolution", "reviewer", [])
+
+    @classmethod
+    def self_evolution_writer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("self_evolution", "writer", [])
+
+    @classmethod
     def to_dicts(cls, specs: list[ToolSpec]) -> list[dict[str, Any]]:
-        """Convert ToolSpec list to the dict format expected by BaseAgent."""
         return [{"name": s.name, "description": s.description, "parameters": dict(s.parameters)} for s in specs]
 
     @classmethod
