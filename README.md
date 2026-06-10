@@ -367,6 +367,48 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
     └── test_self_evolution.py # SelfEvolutionPipeline, 5 roles, graph nodes (49 tests)
 ```
 
+## Example Output
+
+The [reports/research\_output/](reports/research_output/) directory contains a complete example of the Research Pipeline generating a technical report about UMAF itself.
+
+### Research Pipeline Output (10 sub-topics)
+
+| # | Score | Research File |
+|---|-------|---------------|
+| 1 | 45/50 | [Architecture Overview](reports/research_output/research_01_Architecture_Overview%3A_5-Layer_OOP_Class_Hierarchy%2C_7_Pipeli.md) |
+| 2 | 47/50 | [LLM Backend System](reports/research_output/research_02_LLM_Backend_System%3A_DeepSeek_API%2C_Claude_CLI_Subprocess%2C_and.md) |
+| 3 | 47/50 | [Tool System Design](reports/research_output/research_03_Tool_System_Design%3A_8_Tools%2C_ToolRegistry_Architecture%2C_and_.md) |
+| 4 | 46/50 | [CoderPipeline & CoderPPPipeline](reports/research_output/research_04_CoderPipeline_and_CoderPPPipeline%3A_Single-File_and_Multi-Fil.md) |
+| 5 | 46/50 | [ResearchPipeline](reports/research_output/research_05_ResearchPipeline%3A_Dependency-Ordered_Workers%2C_Version-Bump_R.md) |
+| 6 | 44/50 | [TopologyPipeline & SkillPipeline](reports/research_output/research_06_TopologyPipeline_and_SkillPipeline%3A_Agent_Topology_Optimizat.md) |
+| 7 | 46/50 | [FeaturePipeline & SelfEvolutionPipeline](reports/research_output/research_07_FeaturePipeline_and_SelfEvolutionPipeline%3A_Project-Aware_Cod.md) |
+| 8 | 48/50 | [Design Decisions & Engineering Practices](reports/research_output/research_08_Design_Decisions_and_Engineering_Practices%3A_Circuit_Breakers.md) |
+| 9 | 46/50 | [Evaluation Results v1.4--v1.8](reports/research_output/research_09_Evaluation_Results_v1.4%E2%80%93v1.8%3A_Quantitative_Metrics_and_Versi.md) |
+| 10 | 47/50 | [Comparison with AutoGen, CrewAI, MetaGPT](reports/research_output/research_10_Comparison_with_AutoGen%2C_CrewAI%2C_and_MetaGPT%2C_and_Phase_3-5_.md) |
+
+### Final Paper
+
+| File | Description |
+|------|-------------|
+| [research\_proposal.tex](reports/research_output/research_proposal.tex) | Main LaTeX (31 pages, 55 references) |
+| [section\_01--10\_\*.tex](reports/research_output/) | 10 LaTeX section files |
+| [research\_proposal.pdf](reports/research_output/research_proposal.pdf) | Compiled PDF (31 pages) |
+
+### Pipeline Metadata
+
+| File | Description |
+|------|-------------|
+| [decomposition.json](reports/research_output/decomposition.json) | 10 sub-topics with dependencies |
+| [scoring\_report.json](reports/research_output/scoring_report.json) | 5-dimension scores for all 10 works |
+| [agent\_log/](reports/research_output/agent_log/) | Full conversation logs + checkpoints |
+
+### Run It Yourself
+
+```bash
+python3 main.py -m research -b claude_cli --clean --yes \
+  "UMAF: A Universal Multi-Agent Framework — comprehensive technical report"
+```
+
 ## License
 
 MIT
