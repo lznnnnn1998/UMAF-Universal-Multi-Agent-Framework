@@ -1,0 +1,62 @@
+[
+  {
+    "id": 1,
+    "title": "Architecture Overview: 5-Layer OOP Class Hierarchy, 7 Pipelines, and 32 AgentRoles",
+    "description": "Research and document the foundational architecture of UMAF. Map the 5-layer OOP class hierarchy (Data types → Infrastructure → Agent core → Concrete roles → Pipeline classes) showing how each layer builds on the previous. Catalog all 7 pipelines (Coder, Research, CoderPP, Topology, Skill, Feature, SelfEvolution) with their graph topologies, node counts, and flow routing. Provide a complete taxonomy of all 32 AgentRole subclasses organized by pipeline, including their inheritance from the AgentRole ABC and their specific responsibilities. Explain how BaseAgent, AgentRole, and BasePipeline form the architectural backbone.",
+    "dependencies": []
+  },
+  {
+    "id": 2,
+    "title": "LLM Backend System: DeepSeek API, Claude CLI Subprocess, and Backend-Aware Task Generation",
+    "description": "Investigate the dual-backend design of UMAF's LLM layer. Research the DeepSeek backend (ChatOpenAI with deepseek-chat, temperature=0.3, max_tokens=4096, DEEPSEEK_API_KEY from .env) and the Claude CLI backend (subprocess-based claude -p invocation, 300s timeout, environment injection from claude_env_sample.json, cwd and allowed_tools parameters). Document the factory pattern (get_llm(backend)), backend-aware task generation that avoids nested claude -p calls, the pre-fetch layer for arxiv.org content to bypass cc-switch domain verification, the CheckpointManager for state persistence, and the conversation logger (agent_log/). Compare backend trade-offs in terms of reliability, tool-calling fidelity, and cost.",
+    "dependencies": [1]
+  },
+  {
+    "id": 3,
+    "title": "Tool System Design: 8 Tools, ToolRegistry Architecture, and tools_config.json as Single Source of Truth",
+    "description": "Research the complete tool system architecture. Document all 8 tools (read_file, write_file, write_lines, run_command, call_claude, web_search, web_fetch, download_file) with their implementations, timeouts, and parameter specifications. Analyze the ToolRegistry class with its 28 role-specific classmethods and the modular package structure (registry.py, functions.py, feature_tools.py). Explain how tools_config.json serves as the single source of truth for per-role tool assignments, including the __global__ fallback mechanism, metadata key stripping on load, per-tool timeout overrides, and the --tools-config CLI flag. Discuss the tool name translation layer for Claude CLI (Python names → native names via regex) and the TOOL_MAP separation pattern.",
+    "dependencies": [1]
+  },
+  {
+    "id": 4,
+    "title": "CoderPipeline and CoderPPPipeline: Single-File and Multi-File Code Generation with Review Loops",
+    "description": "Research the two code generation pipelines. For CoderPipeline: document the Coder (all 6 tools) → Reviewer (no write_file) cycle with max 5 iterations, the REVIEW_PASSED/REVIEW_FAILED token scanning pattern, coder_files injection into reviewer state, and how the coder resets review_passed=False each run. For CoderPPPipeline: document the organizer → workers → reviewer topology, _decompose() reading .tex and .md spec files, dependency resolution with dual-key registration (by sub_task_id and module_name), the completed dict for dependency tracking, and how _workers_node fixed the bypass issue from v1.6.1. Compare the two pipelines' approaches to decomposition, review, and file management.",
+    "dependencies": [1, 3]
+  },
+  {
+    "id": 5,
+    "title": "ResearchPipeline: Dependency-Ordered Workers, Version-Bump Retries, and LaTeX Report Generation",
+    "description": "Research the ResearchPipeline in depth. Document the head (decompose) → workers (dependency-ordered via _topological_levels()) → reviewer (5-dimension scoring: depth, accuracy, relevance, clarity, originality, each 1-10) → writer (LaTeX) flow. Analyze the dynamic decomposition algorithm that scales sub-topic count 2-8 based on topic complexity, including the _fallback_decompose() mechanism. Research the version-bump retry system: how CheckpointManager.load_previous() restores messages and resets iterations for context-reusing retries, the RESEARCH_MAX_VERSIONS=4 and RESEARCH_MAX_WORKER_RETRIES=3 constants, and the stop-on-failure mechanism that blocks downstream dependents. Document how parse_result() checks os.path.isfile() for honest success reporting, the worker timeout at 600s, and the LaTeX writer with _latex_escape() handling all 10 special characters plus _fallback_latex() template. Trace the flow dict routing: decomposed→workers, worker_retry→workers, researched→reviewer, researched_partial→reviewer, reviewed→writer.",
+    "dependencies": [1, 2, 3]
+  },
+  {
+    "id": 6,
+    "title": "TopologyPipeline and SkillPipeline: Agent Topology Optimization and Artifact-Agnostic Skill Detection",
+    "description": "Research two specialized analysis pipelines. For TopologyPipeline: document the analyzer → designer → evaluator → writer flow. Analyze how TopologyAnalyzerRole assesses 6 complexity factors (data_dependencies, parallelism_opportunities, tool_requirements, error_domains, latency_sensitivity, scale), how TopologyDesignerRole proposes 2-4 candidate topologies using 4 patterns (sequential, fan_out_fan_in, debate_consensus, hierarchical), how TopologyEvaluatorRole scores on 5 dimensions (latency, reliability, cost_efficiency, simplicity, scalability), and how TopologyWriterRole produces topology_spec.json and topology_report.md. For SkillPipeline: document the scanner → 4 parallel detectors → aggregator → writer fan-out/fan-in graph. Analyze how SkillScannerRole classifies artifact types, how the 4 artifact-agnostic detectors (DomainExpertise, TechnicalCraft, Methodology, Rigor) read artifact_analysis.json and infer skills from evidence, how SkillAggregatorRole deduplicates and categorizes, and the final output as skills.json and skills_report.md.",
+    "dependencies": [1, 3]
+  },
+  {
+    "id": 7,
+    "title": "FeaturePipeline and SelfEvolutionPipeline: Project-Aware Code Generation and Autonomous Self-Improvement",
+    "description": "Research two advanced pipelines introduced in v1.6 and v1.8. For FeaturePipeline: document the scanner → planner → coder ↔ reviewer (max 5 cycles) → writer flow. Analyze how FeatureScannerRole produces project_context.json with language, conventions, and file manifest; how FeaturePlannerRole creates implementation_plan.json with both files_to_create AND files_to_modify; how FeatureCoderRole reads existing files, creates new files, modifies existing files, and writes/runs tests; and how the review loop uses the same REVIEW_PASSED/REVIEW_FAILED token scanning pattern. For SelfEvolutionPipeline: document the analyzer → planner → coder ↔ reviewer (max 3 iterations) → writer flow, examining how SelfEvolutionAnalyzerRole scans the UMAF codebase and agent logs to produce analysis_report.json, how changes are detected via git diff or mtime, how the reviewer verifies changes by running tests, and the safety guarantee that all changes are revertible with git checkout -- .",
+    "dependencies": [1, 3, 4]
+  },
+  {
+    "id": 8,
+    "title": "Design Decisions and Engineering Practices: Circuit Breakers, Fallbacks, and Defensive Programming",
+    "description": "Research the engineering principles and design decisions that ensure UMAF's robustness. Document the autonomous agent loop with three circuit breakers: force wrap-up (max iterations threshold), error spiral detection (2 consecutive similar errors triggers termination), and unknown tool warnings. Analyze the stop-on-failure mechanism that breaks out on failure and blocks downstream dependents. Catalog all fallback mechanisms (_fallback_decompose(), _fallback_latex(), etc.) and the principle of \"fallbacks at every stage.\" Investigate the double-parse anti-pattern prevention (AgentRole.execute() already calls parse_result() internally), the dependency injection fixes across pipelines (v1.6.1), the router always moving forward (researched_partial accepted at reviewer), and the Python >= 3.11 requirement with X | None syntax. Document the conversation logger (_save_agent_log()), DuckDuckGo Lite for zero-API-key web search, and the Claude CLI subprocess with scoped .claude/ settings.",
+    "dependencies": [1, 2, 4, 5]
+  },
+  {
+    "id": 9,
+    "title": "Evaluation Results v1.4–v1.8: Quantitative Metrics and Version-by-Version Progress",
+    "description": "Research and analyze the evaluation results across UMAF versions v1.4 through v1.8. Document the test infrastructure growth from 42 smoke tests (v1.5) to 379 tests (v1.8) across 10 test files (conftest, test_smoke, test_pipeline, test_coder, test_research, test_coderpp, test_topology, test_skill, test_feature, test_self_evolution). Analyze v1.4 results: 7/7 workers (100% success rate), scores 48-38/50, 60KB LaTeX output, 443s pipeline time. Trace version-by-version improvements: v1.4.1 (8 bug fixes, 15 smoke tests), v1.5 (Topology + Skill pipelines, 42 smoke tests), v1.6 (Feature pipeline, 99 tests), v1.6.1 (dependency injection fixes, 131 tests), v1.7 (tools_config.json + deduplication, 99 tests), v1.8 (SelfEvolution + 175 new behavioral tests, 379 tests). Include the v1.4.1 agent loop fixes (tool execution before TASK_COMPLETE check, force wrap-up strengthening, post-loop forced write, error spiral threshold 3→2).",
+    "dependencies": [4, 5, 6, 7]
+  },
+  {
+    "id": 10,
+    "title": "Comparison with AutoGen, CrewAI, and MetaGPT, and Phase 3-5 Future Roadmap",
+    "description": "Research and compare UMAF with three leading multi-agent frameworks. For each framework, compare architecture, agent communication patterns, tool systems, LLM backend support, pipeline/graph orchestration, test coverage, and documentation quality. Specifically: AutoGen (Microsoft) — compare conversation-driven agent chat vs UMAF's pipeline-based execution; CrewAI — compare role-based agent design and sequential/parallel task execution; MetaGPT — compare SOP-based multi-agent collaboration and code generation capabilities. Identify UMAF's unique contributions: tools_config.json as single source of truth, backend-aware task generation, pre-fetch layer, circuit breakers, stop-on-failure execution, and the 7-pipeline architecture. Discuss limitations: claude -p filename divergence, worker timeout constraints, DeepSeek JSON tool-call reliability, DuckDuckGo scraping fragility, subprocess permission scoping, and CoderPP workers getting stuck on TaskOutput calls. Map the Phase 3-5 future roadmap including potential areas like streaming output, human-in-the-loop, multi-modal agents, persistent memory, and distributed execution.",
+    "dependencies": [1, 4, 5, 6, 7, 9]
+  }
+]

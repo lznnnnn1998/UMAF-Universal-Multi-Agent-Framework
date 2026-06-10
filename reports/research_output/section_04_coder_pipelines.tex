@@ -1,0 +1,54 @@
+\section{CoderPipeline and CoderPPPipeline: Single-File and Multi-File Code Generation}
+\label{sec:coder}
+
+\subsection{Overview}
+
+UMAF provides two distinct code generation pipelines representing complementary approaches. \textbf{CoderPipeline} is a minimal 2-node cyclic graph for single-file tasks, where a coder generates and a reviewer validates through iterative review (max 5 cycles). \textbf{CoderPPPipeline} is a 5-node graph implementing a decompose$\rightarrow$implement$\rightarrow$review$\rightarrow$assemble workflow for multi-file projects with explicit dependency management.
+
+\subsection{CoderPipeline: 2-Node Cyclic Graph}
+
+The StateGraph uses a \texttt{MultiAgentState} TypedDict with 8 fields. The routing logic: if review passes $\rightarrow$ END; if iteration $\ge$ 5 $\rightarrow$ END; otherwise route to the other agent (coder$\leftrightarrow$reviewer cycle). The entry point is always coder.
+
+\textbf{CoderFiles Injection (v1.6.1 Fix)}: Previously, the reviewer evaluated code without knowing which files the coder produced. The fix performs an \texttt{os.walk()} scan after coder completion, collects non-hidden files, and passes them as \texttt{coder\_files} to the reviewer's \texttt{execute()}, rendered in a ``Files Produced by Coder'' section (truncated at 50 entries).
+
+\subsection{CoderPPPipeline: 5-Node Graph with Self-Loops}
+
+The StateGraph has 5 nodes (head, workers, observer, reviewer, organizer) with status-based routing:
+\begin{itemize}
+    \item \texttt{decomposed $\rightarrow$ workers}
+    \item \texttt{worker\_all\_success $\rightarrow$ observer}
+    \item \texttt{worker\_retry $\rightarrow$ workers} (self-loop)
+    \item \texttt{observed $\rightarrow$ reviewer}
+    \item \texttt{reviewed\_all\_passed $\rightarrow$ organizer}
+    \item \texttt{reviewed\_retry $\rightarrow$ workers} (loop back)
+\end{itemize}
+
+\subsection{Decomposition Strategies}
+
+CoderPipeline uses no decomposition---the requirement is passed directly as a single task. CoderPPPipeline's head agent (\texttt{CoderPPDecomposerRole}, inheriting from \texttt{BaseDecomposerRole}) reads \texttt{.tex} or \texttt{.md} spec files and decomposes into sub-modules with explicit dependency declarations, environment setup (recording Python path, conda environment, pip packages), and a JSON schema with \texttt{id}, \texttt{module\_name}, \texttt{description}, \texttt{files\_to\_create}, and \texttt{dependencies}.
+
+The fallback decomposition: for LaTeX, extracts \texttt{\textbackslash section\{...\}} titles as module ideas; for non-LaTeX, splits on commas and keywords. Always appends a \texttt{main} entry point and guarantees $\ge$2 modules.
+
+\subsection{The v1.6.1 Workers Node Fix}
+
+Prior to v1.6.1, \texttt{\_workers\_node} bypassed \texttt{\_run\_workers\_with\_deps()} entirely, running workers in flat parallel with no dependency awareness. The fix implements dependency resolution directly:
+\begin{itemize}
+    \item A \texttt{completed} dict maps both \texttt{sub\_task\_id} (int) and \texttt{module\_name} (str) to worker outputs
+    \item Before each topological level, tasks with dependencies have \texttt{\_dependency\_outputs} injected
+    \item Topological ordering via \texttt{\_topological\_levels()} with cycle detection and breaking
+    \item File content validation: files under 100 bytes flagged as ``empty/skeletal''
+    \item Stop-on-failure: downstream tasks deferred on upstream failure
+\end{itemize}
+
+\subsection{Post-Reviewer Retry Classification}
+
+A unique resilience feature distinguishes between worker failure (no \texttt{.py} files beyond \texttt{\_\_init\_\_.py} and test files---needs code regeneration) and reviewer failure (code exists but has bugs---just needs re-checking). This prevents unnecessary regeneration of code that merely needs re-review.
+
+\subsection{The REVIEW\_PASSED/REVIEW\_FAILED Token Scanning Pattern}
+
+Both pipelines use \texttt{scan\_review\_verdict()} from \texttt{utils.py}, which scans messages in reverse order (newest first), filters to \texttt{AIMessage} objects only, and uses exclusive PASS detection (\texttt{REVIEW\_PASSED} only recognized when \texttt{REVIEW\_FAILED} is NOT in the same message). CoderPPPipeline extends this with a double-check mechanism that also reads \texttt{review.md} as an authoritative source.
+
+\subsection{Comparison with Related Work}
+
+\raggedright
+CoderPipeline's coder$\leftrightarrow$reviewer loop implements the \textbf{Self-Refine} pattern \cite{selfrefine}. CoderPPPipeline's topology maps to \textbf{AgentMesh}'s planner$\rightarrow$coder$\rightarrow$debugger$\rightarrow$reviewer pipeline \cite{agentmesh}, \textbf{DocAgent}'s topological processing order \cite{docagent}, and \textbf{ProjectGen}'s architecture design $\rightarrow$ skeleton generation $\rightarrow$ code filling stages \cite{projectgen}. Related approaches include CodeCoR's self-reflective collaboration \cite{codecor}, See-Saw's recursive multi-file generation \cite{seesaw}, and Blueprint2Code's planning-repair pipeline \cite{blueprint2code}.

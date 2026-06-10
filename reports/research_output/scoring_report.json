@@ -1,0 +1,152 @@
+[
+  {
+    "sub_task_id": 8,
+    "title": "Design Decisions and Engineering Practices: Circuit Breakers, Fallbacks, and Defensive Programming",
+    "output_file": "research_08_Design_Decisions_and_Engineering_Practices:_Circuit_Breakers.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 10,
+      "relevance": 10,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth(10): Exhaustive coverage of all defensive mechanisms — 3 circuit breakers with precise thresholds and empirical justification, complete fallback catalog across all pipelines, stop-on-failure with cycle-breaking algorithm analysis, double-parse anti-pattern prevention analysis, v1.6.1 DI fixes root cause analysis, and a layered defense-in-depth integration diagram. Accuracy(10): Highly precise — cites exact line numbers, threshold values (MAX_CONSECUTIVE_ERRORS=2 with 127-log empirical basis), and specific code snippets. Claims about the error spiral threshold change from 3→2 are backed by concrete statistics (93.5% doomed-agent catch rate). Relevance(10): The defensive architecture is what makes UMAF production-worthy — without these mechanisms the framework would be an academic prototype. The 'every stage must have a programmatic fallback' principle is the single most important design decision. Clarity(9): Well-organized with a clear 4-layer integration diagram, graduated intervention ladder explanation, and version-by-version motivation. Slightly dense in the fallback catalog section. Originality(9): The synthesis of traditional distributed systems patterns (circuit breakers from Nygard) with LLM-specific failure modes (hallucinated tool names, self-reported false success) is genuinely novel. The 'consecutive persistent error' classification for LLM agent loop protection is a creative adaptation."
+    },
+    "total_score": 48,
+    "rank": 1
+  },
+  {
+    "sub_task_id": 2,
+    "title": "LLM Backend System: DeepSeek API, Claude CLI Subprocess, and Backend-Aware Task Generation",
+    "output_file": "research_02_LLM_Backend_System:_DeepSeek_API,_Claude_CLI_Subprocess,_and.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 10,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth(10): Exceptionally comprehensive — covers dual-backend architecture at the ABC level, factory pattern analysis, backend-aware task generation at three distinct layers, the pre-fetch layer mechanism in full detail, CheckpointManager with versioned persistence and cross-version context reuse, conversation logger, backend trade-offs comparison table, system architecture diagram, and the complete JSON tool-call parsing pipeline with 4 strategies and state-machine repair. Accuracy(9): Claims are well-supported with specific line numbers, code examples, and correct technical descriptions. Minor note: states max_tokens=8192 while CLAUDE.md notes 4096 historically — the report correctly identifies and resolves this discrepancy. Relevance(10): Absolutely foundational — the execution substrate for ALL seven pipelines. Every agent interaction flows through BaseAgent.run() → get_llm(backend).invoke(). Understanding the backend system is prerequisite to understanding any pipeline. Clarity(9): Well-structured with clear subsections, excellent comparison table, and a helpful architecture diagram. The backend-aware task generation section is particularly well-layered. Originality(9): Backend-aware task generation where build_task(backend) produces fundamentally different prompts is a genuine architectural innovation. The pre-fetch layer solving Claude Code's cc-switch domain verification blockage via framework-level urllib is a creative practical solution."
+    },
+    "total_score": 47,
+    "rank": 2
+  },
+  {
+    "sub_task_id": 3,
+    "title": "Tool System Design: 8 Tools, ToolRegistry Architecture, and tools_config.json as Single Source of Truth",
+    "output_file": "research_03_Tool_System_Design:_8_Tools,_ToolRegistry_Architecture,_and_.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 10,
+      "relevance": 10,
+      "clarity": 8,
+      "originality": 9,
+      "justification": "Depth(10): Extraordinary granularity — complete tool specification table with parameters/timeouts/implementations, full 28-method classmethod taxonomy across all 7 pipelines, tools_config.json architecture explained to the key-level with metadata stripping, timeout override, and case-insensitive matching logic, the complete tool name translation layer with exact Python→Claude CLI mappings, TOOL_MAP separation pattern analysis, modular package structure documentation, and comparison with MCP/RAG-based/dynamic tool systems. Accuracy(10): Very precise — specific line numbers for every method, exact parameter descriptions, and tool timeout values verified against source code. The __global__ fallback mechanism and _is_meta stripping logic are described with exact predicate functions. Relevance(10): The tool system is the execution fabric connecting all agents to the external world. Every AgentRole.execute() call flows through ToolRegistry → tools_config.json → BaseAgent tool dispatch. Essential for operators, security reviewers, and framework extenders. Clarity(8): Well-organized but extremely dense. The 28-method taxonomy section reads more like a reference manual than narrative exposition. Some sections (tool name translation, modular package structure) could benefit from more synthesis and less enumeration. Originality(9): The externalized tools_config.json as single source of truth with zero-default safety guarantee is genuinely unique among multi-agent frameworks. The separation of ToolSpec (what), TOOL_MAP (how), ToolRegistry (who), and translation layer (how presented) is a clean architectural contribution."
+    },
+    "total_score": 47,
+    "rank": 3
+  },
+  {
+    "sub_task_id": 10,
+    "title": "Comparison with AutoGen, CrewAI, and MetaGPT, and Phase 3-5 Future Roadmap",
+    "output_file": "research_10_Comparison_with_AutoGen,_CrewAI,_and_MetaGPT,_and_Phase_3-5_.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 10,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth(10): Complete 7-dimension comparison with detailed sub-tables covering architecture, communication patterns, tool systems, backend support, orchestration, test coverage, and documentation. Deep dives into each competitor's architectural philosophy (AutoGen's conversation-driven, CrewAI's role-based hierarchy, MetaGPT's SOP assembly line). Identifies UMAF's 7 unique contributions and 8 limitations with severity ratings. Phase 3-5 roadmap with 11 specific items across 3 phases, each with current state, target, and competitive context. Accuracy(9): Well-researched — AutoGen's 2025-2026 transition to MAF is correctly documented, CrewAI's Process types and Flows API are accurately described, MetaGPT's SOP pipeline, AFlow (ICLR 2025 oral), and MGX are correctly positioned. Minor: Some CrewAI metrics (450M agents/month) are from company marketing rather than independent verification. Relevance(10): Essential for any publication-quality report — contextualizes UMAF within the broader ecosystem and provides the competitive landscape analysis that justifies the framework's existence. The roadmap translates limitations into actionable development phases. Clarity(9): Well-organized with clear phase structure and extensive comparison tables. The conversation-to-graph spectrum diagram efficiently captures the core architectural trade-off. The roadmap items follow a consistent template (current state, target, competitive context) that aids readability. Originality(9): The conversation↔graph spectrum analysis as a framework for comparing multi-agent systems is a genuinely insightful contribution. The identification of 'backend-aware task generation' and 'tools_config.json as single source of truth' as UMAF's unique differentiators is well-argued."
+    },
+    "total_score": 47,
+    "rank": 4
+  },
+  {
+    "sub_task_id": 5,
+    "title": "ResearchPipeline: Dependency-Ordered Workers, Version-Bump Retries, and LaTeX Report Generation",
+    "output_file": "research_05_ResearchPipeline:_Dependency-Ordered_Workers,_Version-Bump_R.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 8,
+      "originality": 10,
+      "justification": "Depth(10): The most architecturally sophisticated pipeline analysis — dynamic decomposition algorithm with 3-tier fallback chain and complexity-scaled topic splitting (2-12 sub-topics), topological level construction with cycle detection/breaking algorithm (Kahn's algorithm variant), version-bump retry state machine with 3 execution modes (fresh, retry-only-failed, max-retries-final-attempt), honest parse_result with os.path.isfile() verification, 5-dimension reviewer scoring with 3-tier fallback, LaTeX generation with 10-character escape function and complete fallback template, flow routing analysis with always-forward philosophy, resume state reconstruction, and backend-aware worker task generation with pre-fetch layer. Accuracy(9): Well-supported with extensive code examples and specific constants (RESEARCH_MAX_VERSIONS=6, WORKER_TIMEOUT=900, HEAD_TIMEOUT=300). The cycle-breaking algorithm edge-case handling is correctly documented. Minor: states sub-topic count 2-12 in overview but fallback caps at 8 — this discrepancy is acknowledged. Relevance(9): The ResearchPipeline is the most complete demonstration of UMAF's design philosophy, but it is one of seven pipelines — not as foundational as the architecture, backend, or tool system analyses. Clarity(8): Very well-structured but also very long and dense. The version-bump retry state machine's three-mode explanation is clear, but the overall file could benefit from more synthesis and less exhaustive enumeration. Originality(10): The always-forward routing (researched_partial → reviewer), version-bump retry with checkpoint-based context reuse (load_previous preserves message history while resetting iteration budget), and honest parse_result with os.path.isfile() are genuinely novel contributions to multi-agent LLM system design. The insight that 'checkpointing is necessary but not sufficient for reliability' is profound."
+    },
+    "total_score": 46,
+    "rank": 5
+  },
+  {
+    "sub_task_id": 7,
+    "title": "FeaturePipeline and SelfEvolutionPipeline: Project-Aware Code Generation and Autonomous Self-Improvement",
+    "output_file": "research_07_FeaturePipeline_and_SelfEvolutionPipeline:_Project-Aware_Cod.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 8,
+      "originality": 10,
+      "justification": "Depth(10): Complete analysis of both pipelines — FeaturePipeline's scanner with 4-phase project context generation and deterministic 117-line fallback, planner with dual create/modify planning, coder with 5-step context-grounded implementation procedure, reviewer with 4-dimensional validation, and SelfEvolutionPipeline's analyzer with 6-category improvement classification, planner with concrete code snippets (current_code_snippet/new_code), coder with 3-tier change detection (git diff → untracked files → mtime fallback), reviewer with test-driven verification and regex-based test result extraction, and writer with fallback report generation. Includes comparative analysis table across all 4 code generation pipelines. Accuracy(9): Well-supported with specific code patterns and design decisions. The SelfEvolutionPipeline safety architecture (git reversibility, MAX_ITERATIONS=3, test suite gate, no new dependencies) is accurately documented. Relevance(9): These pipelines complete UMAF's code generation capability spectrum — essential for understanding the full framework but not as foundational as architecture/backend/tool system. Clarity(8): Very comprehensive but dense. Two complex pipelines in one file creates some organizational challenges. The comparative analysis table helps but the SelfEvolution section is somewhat rushed relative to FeaturePipeline. Originality(10): The project-aware brownfield development approach (scanner→planner→coder→reviewer with project_context.json as shared knowledge base) is genuinely innovative. Even more so, the SelfEvolutionPipeline's lightweight self-improvement with git-based reversibility (no Docker, no VM, no protocol layers — just git checkout) is a creative, pragmatic design point that challenges the assumption that self-modification requires heavy sandboxing."
+    },
+    "total_score": 46,
+    "rank": 6
+  },
+  {
+    "sub_task_id": 4,
+    "title": "CoderPipeline and CoderPPPipeline: Single-File and Multi-File Code Generation with Review Loops",
+    "output_file": "research_04_CoderPipeline_and_CoderPPPipeline:_Single-File_and_Multi-Fil.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 9,
+      "justification": "Depth(10): Complete graph topology analysis with exact routing logic (including the `_router` function), decomposition strategy comparison (no-decomposition vs. BaseDecomposerRole with 6 template methods), detailed REVIEW_PASSED/REVIEW_FAILED token scanning mechanism with 3 design decisions explained, coderFiles injection fix analysis, v1.6.1 workers node fix with dual-key registration and the completed dict, post-reviewer retry classification (worker failure vs. reviewer failure), tool assignment comparison table, resilience mechanisms comparison table (10 rows), and extensive related work comparison with CodeCoR, AgentMesh, DocAgent, ProjectGen, and See-Saw. Accuracy(9): Code snippets are accurate and well-placed. The dependency injection flow (completed dict → dependency resolution → topological ordering → file validation → stop-on-failure) is correctly traced. Relevance(9): Core code generation capability — among the most frequently executed pipelines — but secondary to the architecture overview and backend system in foundational importance. Clarity(9): Well-organized with clear code snippets, comparison tables, and related work mapping. The explanation of the post-reviewer retry classification is particularly clear. Originality(9): The analysis of CoderPP's v1.6.1 fix — distinguishing between worker-failure (no code) and reviewer-failure (code exists but buggy) — reveals a sophisticated resilience pattern. The REVIEW_PASSED/REVIEW_FAILED token scanning analysis (exclusive PASS detection, AIMessage-only filtering) shows deep understanding of linguistic verification pitfalls."
+    },
+    "total_score": 46,
+    "rank": 7
+  },
+  {
+    "sub_task_id": 9,
+    "title": "Evaluation Results v1.4–v1.8: Quantitative Metrics and Version-by-Version Progress",
+    "output_file": "research_09_Evaluation_Results_v1.4–v1.8:_Quantitative_Metrics_and_Versi.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 10,
+      "relevance": 9,
+      "clarity": 9,
+      "originality": 8,
+      "justification": "Depth(10): Exhaustive version-by-version analysis — v1.4 through v1.8 with quantitative metrics, test infrastructure evolution (8→379 tests across 1→10 files), behavioral test design analysis covering 6 test categories (graph node behavior, parse_result logic, flow routing, fallback methods, resume state reconstruction, cross-key dependency resolution), agent loop reliability mechanism analysis with before/after pseudocode, error spiral threshold justification with empirical data (127 agent logs, 93.5% catch rate), cross-framework evaluation comparison table, and comprehensive quantitative trajectory across all versions (test count, worker success rate, review scores, LaTeX output size, pipeline time, codebase lines). Accuracy(10): Highly precise — exact test counts per file per version, specific version numbers for each improvement, concrete metrics with before/after comparisons. The error spiral threshold analysis (3→2 based on 6.5% vs 19.1% self-correction rates) is particularly well-validated. Relevance(9): Essential for validating the framework's claims about reliability and evolution, but evaluative rather than descriptive — secondary to understanding what the framework actually does. Clarity(9): Well-structured with clear version trajectories, comparison tables, and metric trajectories. The behavioral test design section effectively communicates what makes v1.8 tests different from earlier structural tests. Originality(8): Strong synthesis of existing metrics and well-argued version-to-version narrative, but largely reports existing data rather than creating new analytical frameworks. The dual-layer evaluation architecture concept (online token scanning + offline pytest suite) is interesting but not profoundly novel."
+    },
+    "total_score": 46,
+    "rank": 8
+  },
+  {
+    "sub_task_id": 1,
+    "title": "Architecture Overview: 5-Layer OOP Class Hierarchy, 7 Pipelines, and 32 AgentRoles",
+    "output_file": "research_01_Architecture_Overview:_5-Layer_OOP_Class_Hierarchy,_7_Pipeli.md",
+    "scores": {
+      "depth": 9,
+      "accuracy": 9,
+      "relevance": 10,
+      "clarity": 9,
+      "originality": 8,
+      "justification": "Depth(9): Thorough coverage of the 5-layer hierarchy with specific layer descriptions, all 7 pipeline graph topologies with flow routing, complete 32-agent taxonomy table with class/file/responsibility/methods columns, architectural backbone analysis (BaseAgent/AgentRole/BasePipeline), tool assignment architecture, and resilience patterns overview. The pipeline flow routing sections are particularly detailed. However, some layers (especially Layer 1 data types) could benefit from deeper treatment — the TypedDict state types are mentioned but not compared or analyzed. Accuracy(9): Well-supported with specific file:line references throughout. The pipeline topologies and flow routing are accurately described. Minor: the architecture diagram in the CLAUDE.md preamble is referenced but not reproduced in the report. Relevance(10): The single most foundational report — without understanding the architecture, no other analysis makes sense. Provides the structural vocabulary for discussing every other component. Serves as the essential reference for the entire technical report. Clarity(9): Very well organized with clear layer-by-layer progression, pipeline-by-pipeline topology descriptions, and a complete taxonomy table. The resilience patterns section provides a good synthesis. Originality(8): Excellent descriptive synthesis of the architecture, but largely catalogs rather than creates new frameworks. The 5-layer hierarchy separation (data → infrastructure → agent → roles → pipelines) is clearly articulated but was already documented in CLAUDE.md."
+    },
+    "total_score": 45,
+    "rank": 9
+  },
+  {
+    "sub_task_id": 6,
+    "title": "TopologyPipeline and SkillPipeline: Agent Topology Optimization and Artifact-Agnostic Skill Detection",
+    "output_file": "research_06_TopologyPipeline_and_SkillPipeline:_Agent_Topology_Optimizat.md",
+    "scores": {
+      "depth": 10,
+      "accuracy": 9,
+      "relevance": 8,
+      "clarity": 8,
+      "originality": 9,
+      "justification": "Depth(10): Comprehensive analysis of both pipelines — TopologyPipeline's 4-node linear graph with 6-factor complexity assessment, 4-pattern design catalog with complete topology specification schema, 5-dimension evaluation rubric with heuristic fallback scoring table, dual-format output generation with ASCII flow diagrams; SkillPipeline's fan-out/fan-in graph, scanner with 8-category artifact classification algorithm (with weighted scoring), 4 parallel detectors with shared base class analysis including template validation, aggregator deduplication strategy, and writer output formats. Accuracy(9): Specific implementation details are accurate — the heuristic scoring table (sequential:30, fan_out_fan_in:36, etc.) matches the codebase. The artifact classification scoring weights are correctly cited. Relevance(8): These are UMAF's meta-analysis layer — important for demonstrating framework versatility but secondary to the core code generation and research capabilities. A publication could summarize these pipelines more concisely. Clarity(8): Well-organized but covering two distinct pipelines creates length and density challenges. The fallback scoring table and artifact classification algorithm are particularly clear. Originality(9): The artifact-agnostic detector design (same 4 detectors work on software projects, research papers, blog articles, datasets, design documents, presentations, and configurations) is genuinely novel. The meta-circularity of TopologyPipeline recommending fan-out/fan-in as optimal while SkillPipeline uses that exact pattern is an elegant validation."
+    },
+    "total_score": 44,
+    "rank": 10
+  }
+]

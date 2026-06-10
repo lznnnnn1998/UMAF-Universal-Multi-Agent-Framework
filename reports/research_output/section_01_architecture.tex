@@ -1,0 +1,51 @@
+\section{Architecture Overview: 5-Layer OOP Class Hierarchy, 7 Pipelines, and 32 AgentRoles}
+\label{sec:architecture}
+
+\subsection{Architectural Motivation}
+
+UMAF (Universal Multi-Agent Framework) is a LangChain \cite{langgraph} + DeepSeek \cite{deepseekv3} multi-agent system built on a strict 5-layer OOP class hierarchy. The architecture is organized around three architectural backbones---\textbf{BaseAgent} (autonomous agent loop with dual backends), \textbf{AgentRole} (abstract template method defining agent lifecycle), and \textbf{BasePipeline} (LangGraph-based pipeline orchestrator)---that together form a composable, backend-agnostic framework for coordinating LLM-powered agents through complex, multi-stage workflows \cite{autogpt}.
+
+The architectural motivation is to separate concerns vertically (data $\rightarrow$ infrastructure $\rightarrow$ agent logic $\rightarrow$ specialized behavior $\rightarrow$ orchestration) and horizontally (seven independent pipelines for distinct use cases). This layering enables independent evolution of each concern.
+
+\subsection{The 5-Layer OOP Class Hierarchy}
+
+\textbf{Layer 1 --- Data Types}: The foundation consists of \texttt{ToolSpec} (frozen dataclass with \texttt{name}, \texttt{description}, \texttt{parameters} for 8 canonical tools), \texttt{AgentResult} (holding \texttt{messages}, \texttt{iterations}, \texttt{success}), TypedDict State Types for each pipeline (7 distinct state schemas), and \texttt{CheckpointManager} for versioned checkpoint persistence.
+
+\textbf{Layer 2 --- Infrastructure}: The \texttt{LLMProvider} ABC provides a single \texttt{invoke(messages) $\rightarrow$ AIMessage} interface with two implementations: \texttt{DeepSeekProvider} (ChatOpenAI wrapper, model \texttt{deepseek-chat}, temperature 0.3, max\_tokens 8192) and \texttt{ClaudeCLILLM} (subprocess-based \texttt{claude -p} with stream-json parsing, 600s timeout). The \texttt{ToolRegistry} centralizes 8 \texttt{ToolSpec} instances and 28 classmethods returning per-role tool lists.
+
+\textbf{Layer 3 --- Agent Core}: \texttt{BaseAgent} (\textasciitilde830 lines) implements the full autonomous agent loop \cite{react,got} with dual-backend dispatch, three circuit breakers (force wrap-up at max\_steps-3, error spiral detection at 2+ consecutive persistent errors, unknown tool warnings), write reminders, post-loop forced write, and a 4-strategy JSON tool-call parser with state-machine-based repair. \texttt{AgentRole} (ABC) uses the Template Method pattern \cite{designpatterns} with \texttt{tools\_for\_backend()}, \texttt{build\_task()}, and \texttt{parse\_result()} as overridable primitive operations, with \texttt{execute()} as the template method orchestrating the full lifecycle.
+
+\textbf{Layer 4 --- Concrete Roles}: 32 \texttt{AgentRole} subclasses spanning 7 pipelines, each implementing the three abstract methods with pipeline-specific behavior.
+
+\textbf{Layer 5 --- Pipeline Classes}: Seven \texttt{BasePipeline} subclasses, each implementing \texttt{\_build\_graph()}, \texttt{\_build\_initial\_state()}, \texttt{\_decompose()}, and \texttt{\_print\_results()} to compose roles into LangGraph workflows.
+
+\subsection{The Seven Pipelines}
+
+\subsubsection{CoderPipeline (v1.0)}
+A minimal 2-node cyclic graph with max 5 iterations: \texttt{coder $\leftrightarrow$ reviewer}. Coder generates code (6 tools), reviewer validates using REVIEW\_PASSED/REVIEW\_FAILED token scanning (5 tools, no write\_file). The reviewer receives \texttt{coder\_files} via \texttt{os.walk()} scan (v1.6.1 fix).
+
+\subsubsection{ResearchPipeline (v1.2--v1.4)}
+A 4-node graph with worker self-loop: \texttt{head $\rightarrow$ workers $\circlearrowleft$ $\rightarrow$ reviewer $\rightarrow$ writer}. The head agent decomposes research topics into 2--8 sub-topics with complexity-scaled sizing. Workers execute with dependency ordering via \texttt{\_topological\_levels()} and version-bump retry (max 6 versions, 5 retries) with checkpoint-based context reuse. The reviewer scores on 5 dimensions (depth, accuracy, relevance, clarity, originality, each 1--10). The writer generates LaTeX with \texttt{\_latex\_escape()} handling all 10 special characters and a template-based fallback.
+
+\subsubsection{CoderPPPipeline (v1.4--v1.6.1)}
+A 5-node graph with self-loops: \texttt{head $\rightarrow$ workers $\circlearrowleft$ $\rightarrow$ observer $\rightarrow$ reviewer $\leftrightarrow$ workers $\rightarrow$ organizer}. The head agent reads \texttt{.tex} and \texttt{.md} spec files and decomposes code generation into modules with dependency declarations. Workers implement modules in topological order with \texttt{\_dependency\_outputs} injection. The reviewer distinguishes worker failure (no code) from reviewer failure (code exists but has bugs). Post-reviewer retry classification prevents unnecessary regeneration. The organizer assembles only passed modules.
+
+\subsubsection{TopologyPipeline (v1.5)}
+A 4-node strict linear graph with no loops: \texttt{analyzer $\rightarrow$ designer $\rightarrow$ evaluator $\rightarrow$ writer}. The analyzer assesses task complexity across 6 factors. The designer proposes 2--4 candidate topologies using 4 patterns (sequential, fan\_out\_fan\_in, debate\_consensus, hierarchical). The evaluator scores on 5 dimensions (latency, reliability, cost\_efficiency, simplicity, scalability, each 1--10). The writer produces \texttt{topology\_spec.json} and \texttt{topology\_report.md}.
+
+\subsubsection{SkillPipeline (v1.5)}
+A 4-node fan-out/fan-in graph: \texttt{scanner $\rightarrow$ [4 parallel detectors] $\rightarrow$ aggregator $\rightarrow$ writer}. The scanner classifies artifacts into 8 types using deterministic scoring. Four artifact-agnostic detectors (DomainExpertise, TechnicalCraft, Methodology, Rigor) run in parallel, each reading the same \texttt{artifact\_analysis.json} but extracting different skill dimensions. The aggregator deduplicates and categorizes. The writer produces \texttt{skills.json} and \texttt{skills\_report.md}.
+
+\subsubsection{FeaturePipeline (v1.6)}
+A 5-node graph with coder$\leftrightarrow$reviewer cycle (max 5 iterations): \texttt{scanner $\rightarrow$ planner $\rightarrow$ coder $\leftrightarrow$ reviewer $\rightarrow$ writer}. The scanner surveys the project directory to produce \texttt{project\_context.json} with language, conventions, and file manifest. The planner generates \texttt{implementation\_plan.json} with both \texttt{files\_to\_create} and \texttt{files\_to\_modify}. The coder reads existing files before modification and matches project conventions. The reviewer validates across 4 dimensions (completeness, correctness, convention compliance, test quality).
+
+\subsubsection{SelfEvolutionPipeline (v1.8)}
+A 5-node graph with coder$\leftrightarrow$reviewer cycle (max 3 iterations): \texttt{analyzer $\rightarrow$ planner $\rightarrow$ coder $\leftrightarrow$ reviewer $\rightarrow$ writer}. The analyzer scans UMAF's own codebase and agent logs to identify improvement opportunities across 6 categories. The planner creates concrete implementation plans with \texttt{current\_code\_snippet} and \texttt{new\_code}. The coder modifies source in-place with git-diff-based change detection. The reviewer runs \texttt{pytest test/} for regression verification. Safety: operates on current git branch with \texttt{git checkout -- .} reversibility.
+
+\subsection{The 32 AgentRole Taxonomy}
+
+All 32 roles inherit from \texttt{AgentRole} (ABC) and override \texttt{tools\_for\_backend()}, \texttt{build\_task()}. Some override \texttt{parse\_result()} for structured output extraction. The roles span 7 pipelines: CoderPipeline (2 roles), ResearchPipeline (4), CoderPPPipeline (5), TopologyPipeline (4), SkillPipeline (7), FeaturePipeline (5), SelfEvolutionPipeline (5).
+
+\subsection{Resilience Patterns}
+
+UMAF employs seven layers of resilience \cite{releaseit}: (1) circuit breakers in BaseAgent preventing infinite loops, (2) checkpoint-based retry for failed workers, (3) stop-on-failure in dependency graphs preventing cascading failures, (4) fallback at every level (decomposition, scoring, LaTeX, skill detection), (5) dual-backend transparency through factory pattern, (6) always-forward routing accepting \texttt{researched\_partial} results, and (7) merge-on-completion providing consolidated audit trails.

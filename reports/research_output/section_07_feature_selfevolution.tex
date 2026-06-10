@@ -1,0 +1,65 @@
+\section{FeaturePipeline and SelfEvolutionPipeline: Project-Aware Code Generation and Autonomous Self-Improvement}
+\label{sec:feature_selfevolution}
+
+\subsection{Overview}
+
+FeaturePipeline (v1.6) and SelfEvolutionPipeline (v1.8) extend UMAF beyond greenfield code generation into brownfield development \cite{wirl,cohesion} and meta-cognitive self-improvement \cite{godel,agentdevel,metaagent}. FeaturePipeline grounds every agent action in a detailed \texttt{project\_context.json}, enabling surgical edits to existing codebases. SelfEvolutionPipeline inverts the framework's gaze: UMAF analyzes and improves itself through a structured analyze$\rightarrow$plan$\rightarrow$implement$\rightarrow$review pipeline.
+
+\subsection{FeaturePipeline: Scanner $\rightarrow$ Planner $\rightarrow$ Coder $\leftrightarrow$ Reviewer $\rightarrow$ Writer}
+
+\subsubsection{Graph and Routing}
+
+UMAF's most complex routing uses three separate routers: a linear status router for scanner$\rightarrow$planner segments, a dedicated coder router, and a reviewer router implementing the core review loop (review\_passed $\rightarrow$ writer; iteration $<$ 5 $\rightarrow$ coder; iteration $\ge$ 5 $\rightarrow$ writer).
+
+\subsubsection{FeatureScannerRole: Project Context Generation}
+
+The scanner is the gateway to project-aware development with 5 steps: structure discovery via \texttt{find}, configuration analysis (parsing build files), convention extraction (reading 3--5 source files for naming, imports, types, docstrings, error handling), test pattern detection, and \texttt{project\_context.json} generation. The 117-line deterministic fallback performs complete project analysis without LLM calls---completing in \textasciitilde30s for a 2000-file project.
+
+\subsubsection{FeaturePlannerRole: Dual Create/Modify Planning}
+
+The key innovation: planning for both \texttt{files\_to\_create} and \texttt{files\_to\_modify}. Modification entries specify \texttt{path}, \texttt{section} (surgical targeting within files), \texttt{change}, and \texttt{description}. Validation enforces no circular dependencies and mandatory existing-file prereading.
+
+\subsubsection{FeatureCoderRole and FeatureReviewerRole}
+
+The coder follows a 5-step ordered procedure: read plan and context, modify existing files FIRST, create new files, write tests, run tests and fix. The reviewer evaluates across 4 dimensions (completeness, correctness, convention compliance, test quality) with only 2 tools (read\_file, run\_command)---the most restricted reviewer profile, enforcing critique-only review.
+
+\subsection{SelfEvolutionPipeline: Analyzer $\rightarrow$ Planner $\rightarrow$ Coder $\leftrightarrow$ Reviewer $\rightarrow$ Writer}
+
+\subsubsection{Safety Architecture}
+
+Seven layers of safety for self-modification \cite{reflectiondriven,caveagent}: (1) git reversibility via \texttt{git checkout -- .}, (2) reduced iteration limit (MAX\_ITERATIONS=3 vs. 5 for other pipelines), (3) test suite as gate (\texttt{pytest test/}), (4) change traceability via git diff, (5) fallback at every level, (6) no new dependencies, and (7) backward compatibility enforcement.
+
+\subsubsection{SelfEvolutionAnalyzerRole}
+
+Unique among all 32 roles: the only role that analyzes UMAF itself. Identifies improvement opportunities across 6 categories: prompt quality, parameter tuning, error handling, code quality, test gaps, and configuration. The fallback is notable for including a pre-seeded improvement suggestion (SEO-001: expand test coverage) that produced the v1.8 175-test expansion.
+
+\subsubsection{SelfEvolutionCoderRole: In-Place Modification}
+
+The coder operates on UMAF's actual source tree with a three-tier change detection strategy: (1) \texttt{git diff --name-only} for modified tracked files, (2) \texttt{git ls-files --others --exclude-standard} for new files, (3) mtime-based fallback with 60-second window for recently-modified \texttt{.py} files. This approach is informed by self-evolving agent systems \cite{socraticswe,pace,sage}. All changes follow UMAF conventions: Python $\ge$ 3.11 syntax, \texttt{from \_\_future\_\_ import annotations}, no multi-line docstrings.
+
+\subsubsection{SelfEvolutionReviewerRole}
+
+The gatekeeper mandates: run \texttt{pytest test/ -q}, check all tests pass, review code quality, output REVIEW\_PASSED or REVIEW\_FAILED. Extends \texttt{scan\_review\_verdict()} with regex-based test result extraction and early failure detection via \texttt{result.success} check.
+
+\subsection{Comparative Analysis Across All Code Generation Pipelines}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Four-Pipeline Code Generation Spectrum}
+\label{tab:codegen}
+\begin{tabular}{@{}p{2.2cm}p{2.6cm}p{2.6cm}p{3.2cm}p{3.2cm}@{}}
+\toprule
+\textbf{Dimension} & \textbf{Coder} & \textbf{CoderPP} & \textbf{Feature} & \textbf{SelfEvolution} \\
+\midrule
+Dev.\ type & Greenfield (single) & Greenfield (multi) & Brownfield & Self-modification \\
+Entry point & Coder & Head & Scanner & Analyzer \\
+Project awareness & None & Spec files & project\_context.json & Own codebase \\
+Max cycles & 5 & 5 versions & 5 & 3 \\
+Change detection & os.walk() & File existence & Plan-based check & git diff + mtime \\
+Safety & Working dir & Assembly dir & Read-only context & git checkout -- . \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Together, these four pipelines form a comprehensive code generation capability spanning single-file scripts to self-improving systems.
