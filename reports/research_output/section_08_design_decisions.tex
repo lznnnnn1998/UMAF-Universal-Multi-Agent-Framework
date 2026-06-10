@@ -1,0 +1,59 @@
+\section{Design Decisions and Engineering Practices: Circuit Breakers, Fallbacks, and Defensive Programming}
+\label{sec:design}
+
+\subsection{Defensive AI Architecture Philosophy}
+
+UMAF's engineering philosophy treats LLMs as non-deterministic, potentially unreliable microservices \cite{evaluatingcompound}, wrapping them with the same protective infrastructure used for distributed systems (circuit breakers, bulkheads, retries, fallback chains) \cite{releaseit}, augmented with LLM-specific guards \cite{vigil,stateharness}. The framework's three-layer resilience architecture---agent-level circuit breakers, pipeline-level retry mechanisms, and framework-level fallback chains---implements the principle that \textbf{every stage must have a programmatic fallback}.
+
+\subsection{The Autonomous Agent Loop with Three Circuit Breakers}
+
+\subsubsection{Circuit Breaker 1: Force Wrap-Up}
+
+Activates when \texttt{steps\_left $\le$ \_FORCE\_WRAPUP\_THRESHOLD} (last 3 steps). Bifurcated prompt: if files exist---verify and declare TASK\_COMPLETE; if no files---write best-effort output immediately, do not research further. The 3-step runway accommodates the LLM's 2-step response pattern (think $\rightarrow$ act) with one safety margin.
+
+\subsubsection{Circuit Breaker 2: Error Spiral Detection}
+
+Terminates when \texttt{consecutive\_errors $\ge$ 2} (tightened from 3 in v1.4.1). Error classification uses \texttt{\_PERSISTENT\_ERRORS} patterns (timeout, not found, permission denied, connection refused, invalid, error). Empirically validated: of 31 agents reaching 3 consecutive errors in v1.4, only 6.5\% self-corrected. At threshold 2, 93.5\% of doomed agents are caught while saving \textasciitilde1 iteration of LLM calls per spiral.
+
+\subsubsection{Circuit Breaker 3: Unknown Tool Warnings}
+
+Tracks hallucinated tool names via \texttt{known\_unavailable} set. Batch-reports at iteration start rather than individually, preventing prompt bloat. Addresses the common LLM failure mode of hallucinating tool names (e.g., \texttt{search\_web} instead of \texttt{web\_search}).
+
+\subsubsection{Post-Loop Forced Write (Salvage Mechanism)}
+
+After the agent loop exhausts all steps without TASK\_COMPLETE, makes up to 2 additional LLM calls to salvage the task. Approximately 15--20\% of otherwise-failed runs are salvaged by the first call, and an additional 5\% by the second.
+
+\subsection{Stop-on-Failure and Dependency Management}
+
+\texttt{\_run\_workers\_with\_deps()} implements the stop-on-failure pattern adapted for LLM agent DAGs: after each topological level, if any task fails and downstream levels remain, execution breaks immediately. Dual-key registration in the \texttt{completed} dict (by \texttt{sub\_task\_id} and \texttt{module\_name}) supports heterogeneous key types. This prevents downstream tasks from running on missing or corrupted upstream outputs---critical because LLM workers receiving empty context will hallucinate plausible-but-wrong outputs.
+
+\subsection{Catalog of Fallback Mechanisms}
+
+Every significant decision point has a deterministic non-LLM fallback:
+
+\begin{itemize}
+    \item \textbf{Decomposition}: Keyword-based splitting with guaranteed $\ge$2 sub-topics/modules
+    \item \textbf{LaTeX generation}: Pre-defined template with full preamble, abstract, scoring table, bibliography
+    \item \textbf{Reviewer scoring}: Programmatic ranking by file existence and summary length
+    \item \textbf{Skill detection}: Keyword matching against domain term catalogs \texttt{\_DOMAIN\_SIGNALS}
+    \item \textbf{Feature scanning}: os.walk() with extension-based heuristics
+    \item \textbf{JSON parsing}: 4-strategy chain (markdown fences $\rightarrow$ standard order $\rightarrow$ reversed order $\rightarrow$ repair)
+\end{itemize}
+
+All fallbacks share three properties: deterministic (no LLM calls), degraded but useful (lower quality but functional), and transparent (fallback usage is logged) \cite{agenticpatterns}.
+
+\subsection{Double-Parse Anti-Pattern Prevention}
+
+The \texttt{AgentRole.execute()} Template Method makes \texttt{parse\_result()} an internal step of the execution lifecycle. Pipeline nodes call \texttt{role.execute(...)} and receive already-parsed structured data---they never interact with raw \texttt{AgentResult} directly. This eliminates the bug surface where pipeline nodes could forget to call \texttt{parse\_result()}, call it twice, or call it on already-parsed data.
+
+\subsection{Dependency Injection Fixes (v1.6.1)}
+
+A systemic architectural flaw was fixed across three pipelines: LangGraph state was written to TypedDict but never reached downstream agent prompts \cite{sagallm}. The general principle discovered: \textbf{state in the graph dict is NOT automatically available to LLM agents}. Data must be explicitly extracted from graph state and embedded in agent prompts at every invocation point.
+
+\subsection{Router Always Moves Forward}
+
+The flow dict encodes ``progress over perfection'': \texttt{researched\_partial $\rightarrow$ reviewer} routes partial results through rather than aborting. Only three truly unrecoverable states (no sub-tasks, no reviewable outputs, no scored works) trigger termination.
+
+\subsection{Python $\ge$ 3.11 and \texttt{X | None} Syntax}
+
+v1.3 adopted PEP 604 syntax \cite{pep604} (\texttt{X | None} replacing \texttt{Optional[X]}) with \texttt{from \_\_future\_\_ import annotations} in every module. This provides readability improvements and enables stricter type checking (mypy --strict).
