@@ -6,6 +6,8 @@ A modular, extensible multi-agent framework supporting autonomous code generatio
 
 UMAF orchestrates multiple autonomous agents that collaborate through structured pipelines. Each agent reasons, uses tools, and produces verifiable output — mimicking the workflow of a human engineering or research team.
 
+> **v2.0 focus — Meta-programming & self-evolution**: The framework uses its own pipelines to improve itself. Feature Pipeline v2 was built by Feature Pipeline (multi-coder parallelism), then used to upgrade Skill Pipeline (evidence-based detection). SelfEvolutionPipeline closes the loop — analyzing the codebase, planning improvements, implementing changes, and verifying with tests. From v2.0 onward, every pipeline enhancement is built by UMAF itself.
+
 ### Eight Pipelines
 
 | Pipeline | Command | Flow |

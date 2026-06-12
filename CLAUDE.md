@@ -2,6 +2,8 @@
 
 LangChain + DeepSeek multi-agent framework with eight pipelines and two backends. OOP architecture with 5-layer class hierarchy.
 
+> **v2.0 focus**: Meta-programming and self-evolution. The framework now uses its own Feature and Skill pipelines to improve itself — Feature Pipeline v2 rewrote Feature Pipeline for multi-coder parallelism, then improved Skill Pipeline for evidence-based detection. Self-evolution closes the loop: UMAF analyzes its own codebase, plans improvements, implements changes, verifies with tests, and documents results. Every pipeline enhancement from v2.0 onward should be built by UMAF itself.
+
 ## Architecture
 
 ```
