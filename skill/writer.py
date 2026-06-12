@@ -1,4 +1,11 @@
-"""SkillReportWriterRole — produces structured JSON and markdown reports."""
+"""SkillReportWriterRole — produces structured JSON and markdown reports.
+
+v2 improvements:
+- Artifact-type-aware section ordering in markdown reports
+- Skill Gap Analysis identifying notably absent skills for the artifact type
+- skill_graph passthrough from aggregator to skills.json
+- Updated build_task prompt requesting type-specific sections
+"""
 
 import json
 import os
@@ -41,13 +48,147 @@ _CATEGORY_EMOJI: dict[str, str] = {
     "Other": "📌",
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# v2: Expected skill areas per artifact type for gap analysis
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Each area has indicator skill/tool names — if ANY indicator is found,
+# the area is considered "covered". Otherwise it's a gap.
+_ARTIFACT_EXPECTED_AREAS: dict[str, dict[str, list[str]]] = {
+    "software_project": {
+        "Testing": [
+            "Testing Strategy", "Test Coverage Thoroughness",
+            "pytest", "Jest", "Vitest", "Playwright", "MSW", "unittest",
+        ],
+        "CI/CD": [
+            "CI/CD Sophistication",
+            "GitHub Actions", "GitLab CI", "Jenkins", "CircleCI",
+        ],
+        "Version Control": [
+            "Git Workflow Maturity", "Git", "GitHub",
+        ],
+        "Environment Management": [
+            "Environment Management", "Docker", "Kubernetes",
+        ],
+        "Code Quality": [
+            "Code Quality Enforcement", "Design Patterns",
+            "Error Handling Maturity", "ESLint", "Prettier", "Ruff", "Biome",
+        ],
+    },
+    "research_paper": {
+        "Academic Rigor": [
+            "Academic Rigor",
+        ],
+        "Citations & References": [
+            "Citations", "References",
+        ],
+        "Methodology": [
+            "Methodology", "Research Design",
+        ],
+        "Domain Expertise": [
+            "Machine Learning", "Scientific Computing",
+            "Natural Language Processing", "Computer Vision",
+            "Reinforcement Learning", "Data Engineering",
+            "Distributed Systems", "Security", "Compiler Design",
+            "Database Systems", "Game Development", "Finance",
+            "Networking", "Operating Systems", "Embedded Systems",
+            "DevOps", "Frontend Development", "Mobile Development",
+            "Blockchain",
+        ],
+    },
+    "blog_article": {
+        "Clarity": ["Clarity"],
+        "Argumentation": ["Argumentation"],
+        "Technical Writing": ["Technical Writing", "Documentation Quality"],
+        "Domain Knowledge": [
+            "Machine Learning", "Data Engineering", "Frontend Development",
+            "Security", "DevOps", "Distributed Systems",
+        ],
+    },
+    "documentation": {
+        "Technical Writing": ["Technical Writing", "Documentation Quality"],
+        "Clarity": ["Clarity"],
+        "Code Quality": ["Code Quality Enforcement"],
+        "Testing": ["Testing Strategy"],
+    },
+    "dataset": {
+        "Data Engineering": ["Data Engineering"],
+        "Documentation Quality": ["Documentation Quality"],
+        "Testing": ["Testing Strategy"],
+    },
+    "design_document": {
+        "Architecture": [
+            "Component Design", "API Design", "Data Modeling",
+            "Scalability", "Infrastructure Design",
+        ],
+        "Technical Writing": ["Technical Writing", "Clarity"],
+        "Domain Knowledge": [
+            "Distributed Systems", "Networking", "Database Systems",
+        ],
+    },
+    "presentation": {
+        "Narrative Structure": ["Narrative Structure"],
+        "Clarity": ["Clarity"],
+        "Technical Writing": ["Technical Writing"],
+    },
+    "configuration": {
+        "Infrastructure as Code": [
+            "Infrastructure Design", "Terraform", "Ansible",
+        ],
+        "Environment Management": ["Environment Management", "Docker"],
+        "CI/CD": ["CI/CD Sophistication"],
+    },
+}
+
+# v2: Display ordering of inferred-skill categories by artifact type.
+# Categories not listed appear after the ordered ones, in alphabetical order.
+_ARTIFACT_CATEGORY_ORDER: dict[str, list[str]] = {
+    "software_project": [
+        "Testing", "Languages & Runtimes", "Web Frameworks",
+        "Containers & Orchestration", "Package Management",
+        "Build & Tooling", "Code Quality", "Version Control",
+        "CSS & Styling", "API & Data Layer", "State Management",
+        "Infrastructure as Code", "Data Science & ML",
+        "Documentation Tools", "Monitoring & Observability",
+    ],
+    "research_paper": [
+        "Domain Knowledge", "Quality Assurance", "Engineering Practice",
+        "Technical Craft", "Architecture",
+    ],
+    "blog_article": [
+        "Technical Craft", "Quality Assurance",
+        "Domain Knowledge", "Engineering Practice", "Architecture",
+    ],
+}
+
+# v2: Tool category display priority for tools table grouping by artifact type
+_ARTIFACT_TOOL_CATEGORY_ORDER: dict[str, list[str]] = {
+    "software_project": [
+        "Testing", "CI/CD", "Languages & Runtimes", "Web Frameworks",
+        "Containers & Orchestration", "Package Management",
+        "Build & Tooling", "Version Control",
+        "CSS & Styling", "API & Data Layer", "State Management",
+        "Infrastructure as Code", "Data Science & ML",
+        "Documentation Tools",
+    ],
+    "research_paper": [
+        "Documentation Tools", "Languages & Runtimes",
+        "Data Science & ML", "Testing",
+    ],
+    "blog_article": [
+        "Documentation Tools", "Web Frameworks", "CSS & Styling",
+        "Build & Tooling",
+    ],
+}
+
 
 class SkillReportWriterRole(AgentRole):
     """Read the aggregated skill inventory and produce two final output files:
 
-    - ``skills.json``: Structured JSON skill report
+    - ``skills.json``: Structured JSON skill report (v2: includes skill_graph)
     - ``skills_report.md``: Human-readable markdown report with proficiency
-      badges, category breakdowns, and project statistics.
+      badges, category breakdowns, artifact-type-aware section ordering,
+      Skill Gap Analysis, and project statistics.
 
     Both files are written to the working directory.
     """
@@ -67,23 +208,25 @@ class SkillReportWriterRole(AgentRole):
                    project_name: str = "",
                    skill_inventory: dict[str, Any] | None = None,
                    **context: Any) -> str:
-        """Build the report generation prompt."""
+        """Build the report generation prompt (v2: artifact-type-aware sections + gap analysis)."""
         proj = project_name or os.path.basename(
             os.path.dirname(working_dir)) or "Project"
 
         # Embed inventory summary inline so the writer doesn't need to
         # discover the file from disk.
         inventory_summary = ""
+        artifact_type = "unknown"
         if skill_inventory and (skill_inventory.get("tools") or skill_inventory.get("inferred_skills")):
             inv = skill_inventory
             summary = inv.get("summary", {})
             tools = inv.get("tools", inv.get("skills", []))
             skills = inv.get("inferred_skills", [])
+            artifact_type = inv.get("artifact_type", "unknown")
             lines = [
                 "\n## Skill Inventory (pre-computed — NO need to read from disk)",
                 f"**Tools**: {summary.get('total_tools', len(tools))}",
                 f"**Inferred skills**: {summary.get('total_inferred_skills', len(skills))}",
-                f"**Artifact type**: {inv.get('artifact_type', 'unknown')}",
+                f"**Artifact type**: {artifact_type}",
                 "",
                 "### Tools",
             ]
@@ -100,6 +243,47 @@ class SkillReportWriterRole(AgentRole):
             lines.append("")
             inventory_summary = "\n".join(lines)
 
+        # v2: Build artifact-type-specific instructions
+        type_instructions = ""
+        expected_areas = _ARTIFACT_EXPECTED_AREAS.get(artifact_type, {})
+        if artifact_type == "software_project":
+            type_instructions = (
+                f"## Artifact-Type-Aware Report Structure\n"
+                f"This is a **software project**. Your report should emphasize:\n"
+                f"- **Tools & Testing**: detected tools, test frameworks, CI/CD pipelines\n"
+                f"- **Code Craft**: design patterns, error handling, type system usage\n"
+                f"- **Methodology**: dependency management, environment setup, workflows\n"
+                f"Order sections so that Tools → Testing → CI/CD → Code Quality appear first.\n"
+                f"Expected skill areas for this type: {', '.join(expected_areas.keys())}.\n\n"
+            )
+        elif artifact_type == "research_paper":
+            type_instructions = (
+                f"## Artifact-Type-Aware Report Structure\n"
+                f"This is a **research paper**. Your report should emphasize:\n"
+                f"- **Domain Expertise**: specialized subject matter knowledge\n"
+                f"- **Methodology**: research methods, experimental design\n"
+                f"- **Academic Rigor**: citations, references, thoroughness\n"
+                f"Order sections so that Domain Expertise → Methodology → Academic Rigor appear first.\n"
+                f"Expected skill areas for this type: {', '.join(expected_areas.keys())}.\n\n"
+            )
+        elif artifact_type == "blog_article":
+            type_instructions = (
+                f"## Artifact-Type-Aware Report Structure\n"
+                f"This is a **blog article**. Your report should emphasize:\n"
+                f"- **Writing Craft**: clarity, argumentation, narrative structure\n"
+                f"- **Domain Knowledge**: subject matter expertise demonstrated\n"
+                f"- **Communication**: technical writing quality, accessibility\n"
+                f"Order sections so that Writing Craft → Clarity → Argumentation appear first.\n"
+                f"Expected skill areas for this type: {', '.join(expected_areas.keys())}.\n\n"
+            )
+        else:
+            type_instructions = (
+                f"## Artifact-Type-Aware Report Structure\n"
+                f"Artifact type is **{artifact_type}**.\n"
+                f"Present skills in a logical order relevant to this artifact type.\n"
+                f"Expected skill areas for this type: {', '.join(expected_areas.keys()) if expected_areas else 'general assessment'}.\n\n"
+            )
+
         common = (
             f"You are a technical report writer. Your job is to read a skill "
             f"inventory and produce two polished output files.\n\n"
@@ -109,11 +293,13 @@ class SkillReportWriterRole(AgentRole):
             f"The skill inventory (tools + inferred skills) is summarized above. "
             f"Read `skill_inventory.json` from the working directory "
             f"({working_dir}) for full details.\n\n"
+            f"{type_instructions}"
             f"## Output 1: `skills.json`\n"
             f"A structured JSON report with this schema:\n"
             f"```json\n"
             f"{{\n"
             f'  "project": "{proj}",\n'
+            f'  "artifact_type": "{artifact_type}",\n'
             f'  "generated_at": "<ISO timestamp>",\n'
             f'  "summary": {{\n'
             f'    "total_skills": <int>,\n'
@@ -133,7 +319,8 @@ class SkillReportWriterRole(AgentRole):
             f'  "all_skills": [\n'
             f'    {{"name": "Django", "category": "Web Frameworks", '
             f'"proficiency": "advanced", "version": "4.x"}}\n'
-            f'  ]\n'
+            f'  ],\n'
+            f'  "skill_graph": {{ /* from inventory if present */ }}\n'
             f"}}\n"
             f"```\n\n"
             f"## Output 2: `skills_report.md`\n"
@@ -144,6 +331,11 @@ class SkillReportWriterRole(AgentRole):
             f"- Skills by category sections with emojis and badges\n"
             f"- Each skill listed with: name, proficiency badge, version hint, "
             f"evidence files\n"
+            f"- **Artifact-type-aware section ordering**: emphasize the most "
+            f"relevant categories for `{artifact_type}` artifacts\n"
+            f"- **Skill Gap Analysis** section: compare detected skills against "
+            f"expected skills for `{artifact_type}` artifacts. Identify which "
+            f"expected skill areas are missing and provide growth suggestions.\n"
             f"- File statistics table\n"
             f"- Recommendations section\n\n"
             f"Use these proficiency badges in the markdown:\n"
@@ -227,7 +419,7 @@ class SkillReportWriterRole(AgentRole):
     @staticmethod
     def _fallback_skills_json(project_name: str,
                               inventory: dict[str, Any]) -> dict[str, Any]:
-        """Build skills.json from inventory data (v2: tools + inferred skills)."""
+        """Build skills.json from inventory data (v2: tools + inferred skills + skill_graph)."""
         from datetime import datetime, timezone
 
         tools = inventory.get("tools", inventory.get("skills", []))
@@ -255,7 +447,7 @@ class SkillReportWriterRole(AgentRole):
                 "evidence": s.get("evidence", {}),
             })
 
-        return {
+        result: dict[str, Any] = {
             "project": project_name,
             "artifact_type": inventory.get("artifact_type", "unknown"),
             "generated_at": inventory.get("generated_at",
@@ -283,6 +475,12 @@ class SkillReportWriterRole(AgentRole):
             "file_stats": inventory.get("file_stats", {}),
         }
 
+        # v2: Pass skill_graph through if present in inventory
+        if inventory.get("skill_graph"):
+            result["skill_graph"] = inventory["skill_graph"]
+
+        return result
+
     @staticmethod
     def _write_skills_json(working_dir: str, data: dict[str, Any]) -> str:
         """Write skills.json to disk."""
@@ -291,10 +489,188 @@ class SkillReportWriterRole(AgentRole):
             json.dump(data, f, indent=2, default=str)
         return path
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # v2: Helper methods for artifact-type-aware report generation
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _get_category_display_order(artifact_type: str,
+                                     categories: list[str]) -> list[str]:
+        """Return category names sorted by artifact-type-specific priority.
+
+        Categories in the priority list come first (in order), followed by
+        remaining categories in alphabetical order.
+
+        Args:
+            artifact_type: The artifact type (e.g., "software_project").
+            categories: List of category names to sort.
+
+        Returns:
+            Sorted list of category names.
+        """
+        priority = _ARTIFACT_CATEGORY_ORDER.get(artifact_type, [])
+        ordered: list[str] = []
+        remaining: list[str] = []
+
+        # Place priority categories first, in priority order
+        for cat in priority:
+            if cat in categories:
+                ordered.append(cat)
+
+        # Remaining categories sorted alphabetically
+        for cat in sorted(categories):
+            if cat not in ordered:
+                remaining.append(cat)
+
+        return ordered + remaining
+
+    @staticmethod
+    def _get_tool_display_order(artifact_type: str,
+                                 tools_by_category: dict[str, list[dict[str, Any]]]) -> list[str]:
+        """Return tool category names sorted by artifact-type-specific priority.
+
+        Args:
+            artifact_type: The artifact type (e.g., "software_project").
+            tools_by_category: Dict mapping category name to list of tool dicts.
+
+        Returns:
+            Sorted list of category names.
+        """
+        priority = _ARTIFACT_TOOL_CATEGORY_ORDER.get(artifact_type, [])
+        categories = list(tools_by_category.keys())
+        ordered: list[str] = []
+
+        for cat in priority:
+            if cat in categories:
+                ordered.append(cat)
+
+        for cat in sorted(categories):
+            if cat not in ordered:
+                ordered.append(cat)
+
+        return ordered
+
+    @staticmethod
+    def _generate_skill_gap_analysis(
+        artifact_type: str,
+        tools: list[dict[str, Any]],
+        skills: list[dict[str, Any]],
+    ) -> list[str]:
+        """Generate the Skill Gap Analysis markdown section.
+
+        Compares detected skills/tools against expected skill areas for the
+        artifact type. Reports which expected areas are covered and which are
+        notably absent.
+
+        Args:
+            artifact_type: The detected artifact type.
+            tools: List of detected tool dicts.
+            skills: List of inferred skill dicts.
+
+        Returns:
+            List of markdown lines for the gap analysis section.
+        """
+        expected_areas = _ARTIFACT_EXPECTED_AREAS.get(artifact_type, {})
+        if not expected_areas:
+            return []
+
+        # Collect all detected names for matching
+        all_names: list[str] = []
+        for t in tools:
+            all_names.append(t.get("name", ""))
+        for s in skills:
+            all_names.append(s.get("name", ""))
+
+        all_names_lower = [n.lower() for n in all_names]
+
+        lines: list[str] = []
+        lines.append("## 🔍 Skill Gap Analysis")
+        lines.append("")
+        lines.append(
+            f"The following skill areas are expected for **{artifact_type.replace('_', ' ')}** "
+            f"artifacts. Gaps indicate areas where the creator could grow."
+        )
+        lines.append("")
+        lines.append("| Expected Area | Status | Notes |")
+        lines.append("|----------------|--------|-------|")
+
+        detected_count = 0
+        missing_count = 0
+        gap_suggestions: list[str] = []
+
+        for area, indicators in expected_areas.items():
+            # Check if any indicator is found in detected names
+            found = any(
+                any(ind.lower() in name.lower() or name.lower() in ind.lower()
+                    for ind in indicators)
+                for name in all_names
+            )
+
+            if found:
+                lines.append(f"| {area} | ✅ Detected | — |")
+                detected_count += 1
+            else:
+                lines.append(f"| {area} | ❌ Missing | "
+                           f"Consider developing skills in this area |")
+                missing_count += 1
+
+                # Generate specific suggestion
+                if artifact_type == "software_project":
+                    suggestions: dict[str, str] = {
+                        "Testing": "Add unit/integration tests using pytest or Jest",
+                        "CI/CD": "Set up GitHub Actions or GitLab CI for automated builds",
+                        "Version Control": "Adopt conventional commits and branching strategy",
+                        "Environment Management": "Containerize with Docker for reproducible environments",
+                        "Code Quality": "Add linting (Ruff/ESLint) and formatting (Prettier) tools",
+                    }
+                    if area in suggestions:
+                        gap_suggestions.append(f"- **{area}**: {suggestions[area]}")
+                elif artifact_type == "research_paper":
+                    r_suggestions: dict[str, str] = {
+                        "Academic Rigor": "Add methodology section, citations, and limitations",
+                        "Citations & References": "Include bibliography and cite prior work",
+                        "Methodology": "Describe research methods and experimental design",
+                        "Domain Expertise": "Demonstrate deeper subject matter knowledge",
+                    }
+                    if area in r_suggestions:
+                        gap_suggestions.append(f"- **{area}**: {r_suggestions[area]}")
+                elif artifact_type == "blog_article":
+                    b_suggestions: dict[str, str] = {
+                        "Clarity": "Use concrete examples and plain language",
+                        "Argumentation": "Structure arguments with evidence and counterpoints",
+                        "Technical Writing": "Add code examples, diagrams, and structured sections",
+                        "Domain Knowledge": "Include more specialized technical content",
+                    }
+                    if area in b_suggestions:
+                        gap_suggestions.append(f"- **{area}**: {b_suggestions[area]}")
+
+        lines.append("")
+        lines.append(f"**Summary**: {detected_count} of "
+                    f"{detected_count + missing_count} expected areas covered.")
+
+        if missing_count == 0:
+            lines.append("")
+            lines.append("✅ All expected skill areas are covered — the artifact "
+                        "demonstrates well-rounded skills for its type.")
+        elif gap_suggestions:
+            lines.append("")
+            lines.append("### 💡 Growth Suggestions")
+            lines.append("")
+            lines.extend(gap_suggestions)
+
+        lines.append("")
+        return lines
+
     @staticmethod
     def _fallback_report_md(project_name: str, inventory: dict[str, Any],
                             working_dir: str) -> str:
-        """Generate a markdown report from v2 inventory (tools + inferred skills)."""
+        """Generate a markdown report from v2 inventory (tools + inferred skills).
+
+        v2 improvements:
+        - Artifact-type-aware category ordering
+        - Skill Gap Analysis section
+        - Emphasis on type-relevant sections
+        """
         from datetime import datetime, timezone
 
         tools = inventory.get("tools", inventory.get("skills", []))
@@ -337,23 +713,42 @@ class SkillReportWriterRole(AgentRole):
                 lines.append(f"| {badge} | {bar} ({count}) |")
             lines.append("")
 
-        # Detected Tools
+        # ═══════════════════════════════════════════════════════════════════
+        # v2: Detected Tools — with artifact-type-aware category grouping
+        # ═══════════════════════════════════════════════════════════════════
         if tools:
             lines.append("## 🛠️ Detected Tools")
             lines.append("")
-            lines.append("| Tool | Category | Proficiency |")
-            lines.append("|------|----------|-------------|")
-            for t in tools[:30]:
-                name = t.get("name", "?")
-                cat = t.get("category", "Other")
-                prof = t.get("proficiency", "beginner")
-                badge = _BADGES.get(prof, prof)
-                lines.append(f"| {name} | {cat} | {badge} |")
-            if len(tools) > 30:
-                lines.append(f"| ... | {len(tools) - 30} more tools | |")
-            lines.append("")
 
-        # Inferred Skills
+            # v2: Group tools by category for artifact-type-aware display
+            tools_by_cat: dict[str, list[dict[str, Any]]] = {}
+            for t in tools:
+                cat = t.get("category", "Other")
+                tools_by_cat.setdefault(cat, []).append(t)
+
+            # v2: Order categories by artifact-type priority
+            ordered_cats = SkillReportWriterRole._get_tool_display_order(
+                artifact_type, tools_by_cat)
+
+            for cat in ordered_cats:
+                cat_tools = tools_by_cat[cat]
+                emoji = _CATEGORY_EMOJI.get(cat, "📌")
+                if len(ordered_cats) > 1:
+                    lines.append(f"### {emoji} {cat} ({len(cat_tools)})")
+                    lines.append("")
+                lines.append("| Tool | Proficiency | Scope |")
+                lines.append("|------|-------------|-------|")
+                for t in cat_tools:
+                    name = t.get("name", "?")
+                    prof = t.get("proficiency", "beginner")
+                    scope = t.get("scope", "")
+                    badge = _BADGES.get(prof, prof)
+                    lines.append(f"| {name} | {badge} | {scope} |")
+                lines.append("")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # v2: Inferred Skills — artifact-type-aware category ordering
+        # ═══════════════════════════════════════════════════════════════════
         if skills:
             lines.append("## 🧠 Inferred Developer Skills")
             lines.append("")
@@ -364,9 +759,37 @@ class SkillReportWriterRole(AgentRole):
                 cat = s.get("category", "Unknown")
                 by_category.setdefault(cat, []).append(s)
 
-            for cat in sorted(by_category.keys()):
+            # v2: Order categories by artifact-type priority
+            ordered_categories = SkillReportWriterRole._get_category_display_order(
+                artifact_type, list(by_category.keys()))
+
+            # v2: Artifact-type emphasis note
+            if artifact_type == "software_project":
+                lines.append(
+                    "> 💡 **Software Project Focus**: Tools, testing, CI/CD, "
+                    "and code quality are prioritized below. These are the "
+                    "most relevant skill dimensions for software artifacts."
+                )
+                lines.append("")
+            elif artifact_type == "research_paper":
+                lines.append(
+                    "> 💡 **Research Paper Focus**: Domain expertise, methodology, "
+                    "and academic rigor are prioritized below. These are the "
+                    "most relevant skill dimensions for research artifacts."
+                )
+                lines.append("")
+            elif artifact_type == "blog_article":
+                lines.append(
+                    "> 💡 **Blog Article Focus**: Writing craft, clarity, and "
+                    "argumentation are prioritized below. These are the most "
+                    "relevant skill dimensions for written content."
+                )
+                lines.append("")
+
+            for cat in ordered_categories:
                 cat_skills = by_category[cat]
-                lines.append(f"### {cat} ({len(cat_skills)})")
+                emoji = _CATEGORY_EMOJI.get(cat, "📌")
+                lines.append(f"### {emoji} {cat} ({len(cat_skills)})")
                 lines.append("")
                 lines.append("| Skill | Proficiency | Confidence |")
                 lines.append("|-------|-------------|------------|")
@@ -375,10 +798,23 @@ class SkillReportWriterRole(AgentRole):
                     prof = sk.get("proficiency", "beginner")
                     conf = sk.get("confidence", "?")
                     badge = _BADGES.get(prof, prof)
+                    # v2: Add cross-referenced marker
+                    if sk.get("cross_referenced"):
+                        name = f"{name} 🔗"
                     lines.append(f"| {name} | {badge} | {conf} |")
                 lines.append("")
 
+        # ═══════════════════════════════════════════════════════════════════
+        # v2: Skill Gap Analysis — before File Statistics
+        # ═══════════════════════════════════════════════════════════════════
+        gap_lines = SkillReportWriterRole._generate_skill_gap_analysis(
+            artifact_type, tools, skills)
+        if gap_lines:
+            lines.extend(gap_lines)
+
+        # ═══════════════════════════════════════════════════════════════════
         # File Statistics
+        # ═══════════════════════════════════════════════════════════════════
         if file_stats:
             lines.append("## 📁 File Statistics")
             lines.append("")
@@ -411,6 +847,24 @@ class SkillReportWriterRole(AgentRole):
             lines.append("- No inferred skills found — may need more content to analyze.")
         if not tools:
             lines.append("- No tools detected — may not be a software project.")
+
+        # v2: Add gap-related recommendation
+        if artifact_type in _ARTIFACT_EXPECTED_AREAS:
+            expected_areas = _ARTIFACT_EXPECTED_AREAS[artifact_type]
+            all_names = [t.get("name", "") for t in tools] + [s.get("name", "") for s in skills]
+            all_names_lower = [n.lower() for n in all_names]
+            missing = []
+            for area, indicators in expected_areas.items():
+                found = any(
+                    any(ind.lower() in name.lower() or name.lower() in ind.lower()
+                        for ind in indicators)
+                    for name in all_names
+                )
+                if not found:
+                    missing.append(area)
+            if missing:
+                lines.append(f"- **Skill gaps detected** in: {', '.join(missing)}. "
+                           f"See Skill Gap Analysis section above.")
 
         lines.append("")
         lines.append("---")

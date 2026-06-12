@@ -2,11 +2,12 @@
 
 Produces two output files:
 - ``project_scan.json`` — surface-level file listing (backward-compatible)
-- ``artifact_analysis.json`` — deep analysis: artifact type, content samples, structure
+- ``artifact_analysis.json`` — deep analysis: artifact type, content samples, structure, key_files
 """
 
 import json
 import os
+import re
 import subprocess
 from typing import Any
 
@@ -200,22 +201,212 @@ def _classify_artifact(file_list: list[str], content_samples: dict[str, str],
     }
 
 
+# ── File complexity scoring ───────────────────────────────────────────────
+
+# Structural keywords that indicate code complexity and skill demonstration
+_STRUCTURAL_KEYWORDS: set[str] = {
+    "class ", "def ", "async def ", "async ", "await ", "try:", "except ",
+    "import ", "from ", "return ", "yield ", "raise ", "with ", "lambda ",
+    "@", "TypeVar", "Generic", "Protocol", "dataclass", "Enum", "ABC",
+    "__init__", "__call__", "__enter__", "__exit__", "__iter__", "__next__",
+    "if __name__", "assert ", "match ", "case ",
+}
+
+# Markers of generated/minified files to exclude from sampling
+_GENERATED_FILE_MARKERS: set[str] = {".min.", ".generated.", ".gen.", ".bundle.",
+                                     ".compiled.", ".optimized."}
+_GENERATED_DIR_MARKERS: set[str] = {"/dist/", "/build/", "/__pycache__/",
+                                    "/node_modules/", "/.venv/", "/venv/",
+                                    "/vendor/", "/.eggs/", "/.tox/",
+                                    "/coverage/", "/htmlcov/", "/site-packages/",
+                                    "/migrations/", "/fixtures/"}
+_GENERATED_PATH_PATTERNS: list[str] = [
+    r"(^|/)dist/", r"(^|/)build/", r"(^|/)__pycache__/",
+    r"(^|/)node_modules/", r"(^|/)\.venv/", r"(^|/)venv/",
+    r"(^|/)vendor/", r"(^|/)\.eggs/", r"(^|/)\.tox/",
+    r"(^|/)coverage/", r"(^|/)htmlcov/", r"(^|/)site-packages/",
+    r"(^|/)migrations/", r"(^|/)fixtures/",
+]
+
+
+def _is_generated_file(file_path: str, content: str | None = None) -> bool:
+    """Detect generated, minified, or auto-produced files that have low skill signal."""
+    basename = os.path.basename(file_path)
+    ext = os.path.splitext(basename)[1].lower()
+
+    # Check filename markers
+    for marker in _GENERATED_FILE_MARKERS:
+        if marker in basename:
+            return True
+
+    # Common generated file names
+    generated_names = {
+        "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+        "poetry.lock", "Pipfile.lock", "Gemfile.lock",
+        "requirements.txt",  # auto-generated lock style
+    }
+    if basename in generated_names:
+        # Lock files are generated but requirements.txt may be hand-written;
+        # check surrounding context — if alone among many generated files, skip
+        if basename == "requirements.txt":
+            return False
+        return True
+
+    # Check path patterns for generated directories
+    for pattern in _GENERATED_PATH_PATTERNS:
+        if re.search(pattern, file_path):
+            return True
+
+    # Check content for minification heuristics
+    if content and len(content) > 100:
+        lines = content.split("\n")
+        # Minified files have very few lines relative to content length
+        if len(lines) > 0 and len(content) / len(lines) > 500:
+            return True
+        # Extremely long lines (>1000 chars) are typical of minified JS/CSS
+        if any(len(line) > 1000 for line in lines):
+            return True
+
+    # Source map files
+    if ext == ".map" and basename.endswith(".map"):
+        return True
+
+    # Compiled Python bytecode
+    if ext in {".pyc", ".pyo", ".pyd", ".so", ".dll", ".dylib"}:
+        return True
+
+    # Minified CSS/JS naming patterns
+    if (basename.endswith(".min.css") or basename.endswith(".min.js") or
+        ".min." in basename):
+        return True
+
+    return False
+
+
+def _compute_file_complexity(file_path: str, content: str | None = None) -> float:
+    """Compute a complexity score for a file to prioritize skill-demonstrative files.
+
+    Returns a float 0.0-1.0. Higher = more likely to demonstrate skills.
+    Factors: structural keyword density, file size, and pattern diversity.
+    """
+    if content is None:
+        content = safe_read(file_path)
+        if not content:
+            return 0.0
+
+    lines = content.split("\n")
+    total_chars = max(len(content), 1)
+    num_lines = max(len(lines), 1)
+
+    # 1. Structural keyword density (0.0 - 0.5)
+    keyword_count = sum(content.count(kw) for kw in _STRUCTURAL_KEYWORDS)
+    # Normalize: expect ~1 keyword per 50 chars in dense code
+    keyword_density = min(keyword_count / (total_chars / 50), 1.0)
+    keyword_score = keyword_density * 0.5
+
+    # 2. File size score — log-scale, peaks at ~10KB (0.0 - 0.25)
+    size_score = min(total_chars / 10_000, 1.0) * 0.25
+
+    # 3. Pattern diversity — unique structural keywords used (0.0 - 0.25)
+    unique_keywords = sum(1 for kw in _STRUCTURAL_KEYWORDS if kw in content)
+    diversity = min(unique_keywords / max(len(_STRUCTURAL_KEYWORDS) * 0.3, 1), 1.0)
+    diversity_score = diversity * 0.25
+
+    return round(keyword_score + size_score + diversity_score, 3)
+
+
+# ── Body paragraph detection for articles/papers ─────────────────────────
+
+def _is_body_content(content: str) -> float:
+    """Estimate how much of a text file is body content vs headers/frontmatter.
+
+    Returns a ratio 0.0-1.0. Higher = more body content.
+    Body content = paragraphs of prose, not metadata or headers.
+    """
+    if not content:
+        return 0.0
+
+    lines = content.split("\n")
+    if len(lines) < 3:
+        return 0.0
+
+    # Count lines that look like body paragraphs (prose, not headers/metadata)
+    body_lines = 0
+    total_lines = 0
+
+    # Frontmatter detection: YAML-style `---` delimited blocks at file start
+    in_frontmatter = False
+    fm_delim_count = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        total_lines += 1
+
+        # Detect YAML frontmatter boundaries at file start
+        if i < 20 and stripped == "---":
+            fm_delim_count += 1
+            in_frontmatter = fm_delim_count == 1
+            if fm_delim_count == 2:
+                in_frontmatter = False
+            continue
+
+        if in_frontmatter:
+            continue
+
+        # Skip empty lines
+        if not stripped:
+            continue
+
+        # Skip markdown headers (# Title, ## Section, etc.)
+        if re.match(r"^#{1,6}\s", stripped):
+            continue
+
+        # Skip horizontal rules
+        if re.match(r"^[-*=]{3,}$", stripped):
+            continue
+
+        # Skip code blocks (``` fences)
+        if stripped.startswith("```"):
+            continue
+
+        # Skip table rows (| ... | ... |)
+        if stripped.startswith("|") and stripped.endswith("|"):
+            continue
+
+        # Skip list items that are very short (metadata-like)
+        if re.match(r"^[-*+]\s+\S+:", stripped) and len(stripped) < 40:
+            continue
+
+        # A body line is prose: reasonably long, contains spaces, not a single token
+        words = stripped.split()
+        if len(words) >= 5 and len(stripped) >= 40:
+            body_lines += 1
+        elif len(stripped) >= 80:
+            body_lines += 1
+
+    if total_lines == 0:
+        return 0.0
+
+    return round(body_lines / total_lines, 3)
+
+
 def _sample_content(project_dir: str, working_dir: str,
                     file_list: list[str]) -> dict[str, str]:
-    """Read content from key files to understand the artifact."""
+    """Read content from key files to understand the artifact.
+
+    Sampling priority (v2):
+    1. Skill-demonstrative files: complex source files (software) or body-rich
+       documents (articles/papers) — these carry the richest skill signal.
+    2. README/config/build files as secondary fallback.
+    3. Remaining diverse files by extension to ensure coverage.
+
+    Generated/minified files are excluded from sampling.
+    """
     samples: dict[str, str] = {}
     max_samples = 12
-    max_chars = 2000  # per file
+    max_chars = 4000  # per file (v2: doubled from 2000)
 
-    # Priority: README/docs first, then configs, then source
-    priority_patterns = [
-        "README", "readme", "CONTRIBUTING", "CHANGELOG", "LICENSE",
-        "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
-        "Makefile", "Dockerfile", "docker-compose",
-        ".github/workflows", ".gitlab-ci.yml",
-    ]
-
-    sampled = 0
+    # Resolve base directory
     if os.path.isabs(project_dir):
         base = project_dir
     else:
@@ -223,13 +414,151 @@ def _sample_content(project_dir: str, working_dir: str,
     if os.path.isfile(base):
         base = os.path.dirname(base)
 
-    # First pass: priority files
+    # Source code extensions for complexity scoring
+    source_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs",
+                   ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".swift",
+                   ".kt", ".scala", ".php", ".cs", ".ex", ".exs"}
+
+    # Article/document extensions for body-content scoring
+    prose_exts = {".md", ".mdx", ".rst", ".adoc", ".txt", ".tex"}
+
+    # Determine artifact lean from file extensions
+    source_count = sum(1 for f in file_list
+                       if os.path.splitext(f)[1].lower() in source_exts)
+    prose_count = sum(1 for f in file_list
+                      if os.path.splitext(f)[1].lower() in prose_exts)
+    total = max(len(file_list), 1)
+    is_likely_software = source_count / total >= 0.10
+    is_likely_article = prose_count / total >= 0.30 and source_count / total < 0.10
+
+    sampled = 0
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Pass 1: Skill-demonstrative files (highest priority)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if is_likely_software:
+        # For software projects: score source files by complexity and sample top ones
+        scored_files: list[tuple[float, str]] = []
+        for fpath in file_list:
+            ext = os.path.splitext(fpath)[1].lower()
+            if ext not in source_exts:
+                continue
+            if _is_generated_file(fpath):
+                continue
+            full_path = os.path.join(base, fpath)
+            raw = safe_read(full_path)
+            if not raw:
+                continue
+            score = _compute_file_complexity(full_path, raw)
+            scored_files.append((score, fpath))
+
+        # Sort by complexity descending; sample top files, one per directory
+        scored_files.sort(key=lambda x: x[0], reverse=True)
+        seen_dirs_complex: set[str] = set()
+        for score, fpath in scored_files:
+            if sampled >= max_samples:
+                break
+            d = os.path.dirname(fpath)
+            if d in seen_dirs_complex and sampled >= 6:
+                # After 6 files, prefer diverse directories
+                continue
+            if d:
+                seen_dirs_complex.add(d)
+            full_path = os.path.join(base, fpath)
+            content = safe_read(full_path)
+            if content:
+                samples[fpath] = content[:max_chars]
+                sampled += 1
+
+    elif is_likely_article:
+        # For articles/papers: prioritize files with high body content ratio
+        scored_articles: list[tuple[float, str]] = []
+        for fpath in file_list:
+            ext = os.path.splitext(fpath)[1].lower()
+            if ext not in prose_exts:
+                continue
+            if _is_generated_file(fpath):
+                continue
+            full_path = os.path.join(base, fpath)
+            raw = safe_read(full_path)
+            if not raw:
+                continue
+            body_ratio = _is_body_content(raw)
+            scored_articles.append((body_ratio, fpath))
+
+        scored_articles.sort(key=lambda x: x[0], reverse=True)
+        seen_dirs_prose: set[str] = set()
+        for body_ratio, fpath in scored_articles:
+            if sampled >= max_samples:
+                break
+            if body_ratio == 0.0:
+                continue
+            d = os.path.dirname(fpath)
+            if d in seen_dirs_prose and sampled >= 6:
+                continue
+            if d:
+                seen_dirs_prose.add(d)
+            full_path = os.path.join(base, fpath)
+            content = safe_read(full_path)
+            if content:
+                samples[fpath] = content[:max_chars]
+                sampled += 1
+
+    else:
+        # Mixed/unknown artifact: use complexity scoring for any source files
+        # plus body-content scoring for prose files
+        hybrid_scored: list[tuple[float, str, str]] = []  # (score, path, kind)
+        for fpath in file_list:
+            ext = os.path.splitext(fpath)[1].lower()
+            if _is_generated_file(fpath):
+                continue
+            full_path = os.path.join(base, fpath)
+            raw = safe_read(full_path)
+            if not raw:
+                continue
+            if ext in source_exts:
+                score = _compute_file_complexity(full_path, raw)
+                hybrid_scored.append((score, fpath, "source"))
+            elif ext in prose_exts:
+                score = _is_body_content(raw)
+                if score > 0.0:
+                    hybrid_scored.append((score, fpath, "prose"))
+
+        hybrid_scored.sort(key=lambda x: x[0], reverse=True)
+        seen_dirs_hybrid: set[str] = set()
+        for score, fpath, _kind in hybrid_scored:
+            if sampled >= max_samples:
+                break
+            d = os.path.dirname(fpath)
+            if d in seen_dirs_hybrid and sampled >= 6:
+                continue
+            if d:
+                seen_dirs_hybrid.add(d)
+            full_path = os.path.join(base, fpath)
+            content = safe_read(full_path)
+            if content:
+                samples[fpath] = content[:max_chars]
+                sampled += 1
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Pass 2: README/config/documentation files (secondary priority)
+    # ═══════════════════════════════════════════════════════════════════════
+    priority_patterns = [
+        "README", "readme", "CONTRIBUTING", "CHANGELOG", "LICENSE",
+        "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
+        "Makefile", "Dockerfile", "docker-compose",
+        ".github/workflows", ".gitlab-ci.yml",
+    ]
+
     for pattern in priority_patterns:
         if sampled >= max_samples:
             break
         for fpath in file_list:
             if sampled >= max_samples:
                 break
+            if fpath in samples:
+                continue
             if pattern.lower() in fpath.lower():
                 full_path = os.path.join(base, fpath)
                 content = safe_read(full_path)
@@ -237,28 +566,16 @@ def _sample_content(project_dir: str, working_dir: str,
                     samples[fpath] = content[:max_chars]
                     sampled += 1
 
-    # Second pass: source/test files from different directories
-    source_dirs: set[str] = set()
-    for fpath in file_list:
-        d = os.path.dirname(fpath)
-        if d and d not in source_dirs and sampled < max_samples:
-            ext = os.path.splitext(fpath)[1].lower()
-            source_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs",
-                          ".java", ".c", ".cpp", ".rb", ".swift"}
-            if ext in source_exts:
-                source_dirs.add(d)
-                full_path = os.path.join(base, fpath)
-                content = safe_read(full_path)
-                if content:
-                    samples[fpath] = content[:max_chars]
-                    sampled += 1
-
-    # Third pass: any remaining diverse files
+    # ═══════════════════════════════════════════════════════════════════════
+    # Pass 3: Remaining diverse files by extension (coverage fallback)
+    # ═══════════════════════════════════════════════════════════════════════
     seen_exts: set[str] = set()
     for fpath in file_list:
         if sampled >= max_samples:
             break
         if fpath in samples:
+            continue
+        if _is_generated_file(fpath):
             continue
         ext = os.path.splitext(fpath)[1].lower()
         if ext not in seen_exts:
@@ -315,6 +632,173 @@ def _analyze_structure(file_list: list[str], project_dir: str) -> dict[str, Any]
     }
 
 
+# ── Key files identification ──────────────────────────────────────────────
+
+def _identify_key_files(file_list: list[str], content_samples: dict[str, str],
+                        project_dir: str) -> list[dict[str, Any]]:
+    """Identify the most skill-demonstrative files from the project.
+
+    Each entry contains:
+    - path: relative file path
+    - rationale: why this file demonstrates skills
+    - skill_indicators: structural keywords/patterns found
+    - complexity_score: 0.0-1.0 based on keyword density, size, and pattern diversity
+
+    Used by downstream detectors to reference specific evidence and by the
+    report writer to cite concrete examples.
+    """
+    # Resolve base directory
+    if os.path.isabs(project_dir):
+        base = project_dir
+    else:
+        base = os.path.abspath(project_dir)
+    if os.path.isfile(base):
+        base = os.path.dirname(base)
+
+    source_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs",
+                   ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".swift",
+                   ".kt", ".scala", ".php", ".cs", ".ex", ".exs"}
+    prose_exts = {".md", ".mdx", ".rst", ".adoc", ".txt", ".tex"}
+
+    # Build rationale descriptions from structural indicators
+    def _build_rationale(fpath: str, content: str, score: float,
+                         indicators: list[str]) -> str:
+        """Generate a human-readable rationale for why this file is skill-demonstrative."""
+        ext = os.path.splitext(fpath)[1].lower()
+        dir_name = os.path.dirname(fpath) or "root"
+
+        parts: list[str] = []
+
+        # File role description
+        basename = os.path.basename(fpath).lower()
+        if basename.startswith("test_"):
+            parts.append("Test file with assertion patterns")
+        elif "model" in basename or "schema" in basename:
+            parts.append(f"Data model/schema definition")
+        elif "service" in basename or "handler" in basename:
+            parts.append(f"Service/business logic")
+        elif "util" in basename or "helper" in basename:
+            parts.append(f"Utility/helper module")
+        elif "main" in basename or "app" in basename or "index" in basename or "cli" in basename:
+            parts.append(f"Entry point/application bootstrap")
+        elif "config" in basename or "settings" in basename:
+            parts.append(f"Configuration module")
+        elif basename.startswith("readme"):
+            parts.append(f"Project documentation")
+        elif dir_name in ("src", "lib", "pkg"):
+            parts.append(f"Core source module")
+        elif ext in source_exts:
+            parts.append(f"Source file in {dir_name}")
+
+        # Pattern-based rationale
+        pattern_phrases: dict[str, str] = {
+            "class ": "class definitions",
+            "def ": "function definitions",
+            "async def ": "async programming",
+            "async ": "async patterns",
+            "await ": "async/await usage",
+            "try:": "error handling",
+            "except ": "exception handling",
+            "import ": "module imports",
+            "from ": "module imports",
+            "return ": "return statements",
+            "yield ": "generator patterns",
+            "raise ": "exception raising",
+            "with ": "context managers",
+            "lambda ": "lambda expressions",
+            "@": "decorators",
+            "TypeVar": "generic typing",
+            "Protocol": "structural subtyping",
+            "dataclass": "data classes",
+            "Enum": "enumeration types",
+            "ABC": "abstract base classes",
+            "__init__": "class initialization",
+            "if __name__": "script entry point",
+            "assert ": "assertions",
+            "match ": "pattern matching",
+            "case ": "pattern matching",
+            "# TODO": "documented TODOs",
+            "TODO": "documented TODOs",
+        }
+
+        found_patterns = []
+        for kw, phrase in pattern_phrases.items():
+            if kw in content:
+                found_patterns.append(phrase)
+
+        if found_patterns:
+            # Deduplicate and pick top 3
+            unique_patterns = list(dict.fromkeys(found_patterns))[:3]
+            parts.append("demonstrates " + ", ".join(unique_patterns))
+        else:
+            parts.append("contains structured content")
+
+        # Add quality signal
+        if score >= 0.7:
+            parts.append("high complexity and pattern diversity")
+        elif score >= 0.4:
+            parts.append("moderate complexity")
+
+        return " — ".join(parts) + "."
+
+    # Score and collect key files
+    scored_key_files: list[tuple[float, str]] = []
+    for fpath in file_list:
+        if _is_generated_file(fpath):
+            continue
+        ext = os.path.splitext(fpath)[1].lower()
+        # Only consider source and prose files for key_files
+        if ext not in source_exts and ext not in prose_exts:
+            # Also include config files that are skill-demonstrative
+            if ext not in {".toml", ".yaml", ".yml", ".json", ".cfg"}:
+                continue
+
+        full_path = os.path.join(base, fpath)
+        content = safe_read(full_path)
+        if not content:
+            continue
+
+        score = _compute_file_complexity(full_path, content)
+        if score > 0.0:
+            scored_key_files.append((score, fpath))
+
+    # Sort by complexity descending
+    scored_key_files.sort(key=lambda x: x[0], reverse=True)
+
+    # Build key_files list (top 15, or all with score >= 0.2)
+    key_files: list[dict[str, Any]] = []
+    seen_dirs: set[str] = set()
+    for score, fpath in scored_key_files:
+        if len(key_files) >= 15:
+            break
+        if score < 0.1:
+            break
+
+        d = os.path.dirname(fpath)
+        # After 8 files, prefer diverse directories
+        if d in seen_dirs and len(key_files) >= 8:
+            continue
+        seen_dirs.add(d)
+
+        full_path = os.path.join(base, fpath)
+        content = safe_read(full_path)
+        raw_indicators = [kw.strip() for kw in _STRUCTURAL_KEYWORDS
+                          if kw.strip() and kw in (content or "")]
+        # Deduplicate and limit to top 10
+        skill_indicators = list(dict.fromkeys(raw_indicators))[:10]
+
+        rationale = _build_rationale(fpath, content or "", score, skill_indicators)
+
+        key_files.append({
+            "path": fpath,
+            "rationale": rationale,
+            "skill_indicators": skill_indicators,
+            "complexity_score": score,
+        })
+
+    return key_files
+
+
 # ── Scanner Role ──────────────────────────────────────────────────────────
 
 class SkillScannerRole(AgentRole):
@@ -322,7 +806,7 @@ class SkillScannerRole(AgentRole):
 
     Produces:
     - ``project_scan.json``: surface-level file listing (backward-compatible)
-    - ``artifact_analysis.json``: artifact type, content samples, structure
+    - ``artifact_analysis.json``: artifact type, content samples, structure, key_files
 
     The artifact analysis is the foundation for skill inference — downstream
     detectors use it to understand what kind of artifact they're analyzing
@@ -341,7 +825,7 @@ class SkillScannerRole(AgentRole):
 
     def build_task(self, backend: str, project_dir: str = ".",
                    working_dir: str = ".", **context: Any) -> str:
-        """Build the deep scan prompt."""
+        """Build the deep scan prompt (v2 — deeper sampling, key_files identification)."""
         # Resolve to absolute path so the agent finds the target regardless
         # of which directory it runs commands from (its CWD is working_dir).
         if os.path.isabs(project_dir):
@@ -375,19 +859,42 @@ class SkillScannerRole(AgentRole):
             f"- presentation: slides, talk materials\n"
             f"- configuration: dotfiles, infra-as-code, settings\n"
             f"- unknown: doesn't match any clear pattern\n\n"
-            f"## Phase 3 — Deep Reading\n"
-            f"Read 8-12 representative files to understand content:\n"
-            f"- README/index/landing page first\n"
-            f"- Key config files (pyproject.toml, package.json, etc.)\n"
-            f"- 2-4 source files from different directories (if software)\n"
-            f"- Main document body (if article/paper)\n"
-            f"- 1-2 test files (if present)\n"
-            f"Sample ~2000 chars per file — enough to understand content.\n\n"
+            f"## Phase 3 — Deep Reading (Improved v2)\n"
+            f"Read 8-12 representative files to understand content.\n"
+            f"**Sampling priority — read skill-demonstrative files FIRST:**\n"
+            f"- For software projects: prioritize complex source files "
+            f"(files with many functions, classes, type annotations, "
+            f"error handling, async code, design patterns) over README/config.\n"
+            f"- For articles/papers: prioritize body paragraphs and "
+            f"substantive content sections over headers/frontmatter.\n"
+            f"- For documentation: prioritize API reference and guide "
+            f"content over index/landing pages.\n"
+            f"- README, config files, and build files are SECONDARY — "
+            f"sample them only after skill-demonstrative files.\n"
+            f"**Sample ~4000 chars per file** (increased from ~2000) — "
+            f"enough for deeper context understanding.\n"
+            f"**Avoid sampling** generated/minified files, lock files, "
+            f"vendor code, and compiled artifacts.\n"
+            f"Read from at least 4 different directories for diversity.\n\n"
             f"## Phase 4 — Structure Analysis\n"
             f"Map the artifact's organization:\n"
             f"- Top-level components (directories, sections, chapters)\n"
             f"- How components relate to each other\n"
             f"- Key entry points (main files, index, abstract)\n\n"
+            f"## Phase 5 — Key Files Identification (v2)\n"
+            f"After deep reading, identify the **10-15 most "
+            f"skill-demonstrative files**. These are files that BEST "
+            f"showcase the artifact's skills, complexity, and craftsmanship.\n"
+            f"For each key file, provide:\n"
+            f"- `path`: relative file path\n"
+            f"- `rationale`: 1-2 sentence explanation of WHY this file "
+            f"demonstrates skills (e.g., 'Contains complex class hierarchy "
+            f"with type annotations and error handling — demonstrates "
+            f"Type System Proficiency and Design Patterns')\n"
+            f"- `skill_indicators`: list of structural keywords/patterns "
+            f"found (class, def, async, try/except, decorators, generics, etc.)\n"
+            f"- `complexity_score`: 0.0-1.0 estimate based on keyword "
+            f"density, file size, and pattern diversity\n\n"
             f"## Output\n"
             f"Write `artifact_analysis.json` with this schema:\n"
             f"```json\n"
@@ -409,6 +916,15 @@ class SkillScannerRole(AgentRole):
             f'      {{"path": "src/models", "file_count": 5, "description": "..."}}\n'
             f'    ]\n'
             f'  }},\n'
+            f'  "key_files": [\n'
+            f'    {{\n'
+            f'      "path": "src/models/user.py",\n'
+            f'      "rationale": "Complex class hierarchy with type annotations and error handling — demonstrates Type System Proficiency and Design Patterns",\n'
+            f'      "skill_indicators": ["class", "TypeVar", "except", "@dataclass"],\n'
+            f'      "complexity_score": 0.85\n'
+            f'    }},\n'
+            f'    ...\n'
+            f'  ],\n'
             f'  "metadata": {{\n'
             f'    "total_files": <int>,\n'
             f'    "languages_detected": ["Python", "JavaScript"],\n'
@@ -491,7 +1007,8 @@ class SkillScannerRole(AgentRole):
         """Run a full artifact analysis without LLM.
 
         Uses find/ls for surface scan, file reading for content sampling,
-        and pattern matching for artifact classification.
+        pattern matching for artifact classification, and complexity
+        scoring for key file identification.
         """
         from datetime import datetime, timezone
 
@@ -514,7 +1031,7 @@ class SkillScannerRole(AgentRole):
             # Try to get files directly if categories are empty
             file_list = surface.get("_raw_file_list", [])
 
-        # Content sampling
+        # Content sampling (v2: deeper, skill-demonstrative-first)
         content_samples = _sample_content(project_dir, working_dir, file_list)
 
         # Structure analysis
@@ -522,6 +1039,9 @@ class SkillScannerRole(AgentRole):
 
         # Artifact classification
         artifact_type = _classify_artifact(file_list, content_samples, project_dir)
+
+        # Key files identification (v2)
+        key_files = _identify_key_files(file_list, content_samples, project_dir)
 
         # Metadata
         languages: set[str] = set()
@@ -557,6 +1077,7 @@ class SkillScannerRole(AgentRole):
             },
             "content_samples": content_samples,
             "structure": structure,
+            "key_files": key_files,
             "metadata": {
                 "total_files": surface.get("total_files", 0),
                 "languages_detected": sorted(languages),

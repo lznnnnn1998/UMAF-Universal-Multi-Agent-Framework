@@ -232,5 +232,31 @@
     "writer": [
       "write_file"
     ]
+  },
+  "plan": {
+    "_description": "Plan Pipeline: scanner gathers project context -> decomposer builds task tree -> 4 parallel analyzers (dependency, risk, resource, cross-cutting) -> writer synthesizes plan spec + report.",
+    "scanner": [
+      "read_file",
+      "web_search"
+    ],
+    "decomposer": [
+      "read_file"
+    ],
+    "dependency_analyzer": [
+      "read_file"
+    ],
+    "risk_assessor": [
+      "read_file"
+    ],
+    "resource_estimator": [
+      "read_file"
+    ],
+    "cross_cutting_analyzer": [
+      "read_file"
+    ],
+    "writer": [
+      "read_file",
+      "write_file"
+    ]
   }
 }

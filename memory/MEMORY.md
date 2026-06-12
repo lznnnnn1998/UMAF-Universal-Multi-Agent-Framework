@@ -1,5 +1,5 @@
-- [Version Diffs](version_diffs.md) — Complete changelog: v1.0→v1.8 (12+8 bug fixes, backend-aware agents, Python 3.11, OOP, 7 pipelines, 379 tests)
-- [Architecture Progress](architecture_progress.md) — 7 pipelines, 2 backends, 8 tools, 32 AgentRoles, OOP hierarchy, circuit breakers, design decisions
+- [Version Diffs](version_diffs.md) — Complete changelog: v1.0→v2.0 (Feature Pipeline v2 multi-coder, Skill Pipeline v2 evidence-based, 480 tests)
+- [Architecture Progress](architecture_progress.md) — 8 pipelines, 2 backends, 8 tools, 39 AgentRoles, OOP hierarchy, circuit breakers, design decisions
 - [Key Updates](key_updates.md) — Verified metrics across all versions, critical bug summaries, architecture decisions that matter most
-- [OOP Refactoring](oop_refactoring.md) — 5-layer class hierarchy, AgentRole ABC, ToolRegistry, 32 concrete roles, 7 pipeline classes, double-parse anti-pattern
-- [Pipeline Robustness](pipeline_robustness.md) — v1.4 dependency stop-on-failure, version-bump retry with context reuse, honest parse_result, worker retry state machine
+- [OOP Refactoring](oop_refactoring.md) — 5-layer class hierarchy, AgentRole ABC, ToolRegistry, 39 concrete roles, 8 pipeline classes, double-parse anti-pattern
+- [Pipeline Robustness](pipeline_robustness.md) — v1.4 dependency stop-on-failure, version-bump retry with context reuse, honest parse_result, worker retry state machine (v1.9: built-in AgentRole retry, topology retry loop, feature version-aware retry; v2.0: multi-coder topological-level execution with dependency injection)

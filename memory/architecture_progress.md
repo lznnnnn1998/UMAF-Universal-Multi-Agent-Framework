@@ -1,6 +1,6 @@
 ---
 name: architecture-progress
-description: "Architecture evolution — 7 pipelines, 2 backends, modular packages, OOP class hierarchy, 32 roles, 379 tests"
+description: "Architecture evolution — 8 pipelines, 2 backends, modular packages, OOP class hierarchy, 39 roles, 480 tests"
 metadata: 
   node_type: memory
   type: project
@@ -9,7 +9,7 @@ metadata:
 
 ## Architecture Overview
 
-UMAF is a LangChain + LangGraph multi-agent framework with 2 LLM backends and 7 pipelines.
+UMAF is a LangChain + LangGraph multi-agent framework with 2 LLM backends and 8 pipelines.
 
 ```
 main.py → pipeline/      → agent.py → llm.py              (all pipelines)
@@ -22,8 +22,8 @@ main.py → pipeline/      → agent.py → llm.py              (all pipelines)
         ├── TopologyPipeline    ├── ResearchDecomposerRole
         ├── SkillPipeline       ├── ResearchReviewerRole
         ├── FeaturePipeline     ├── WriterRole
-        └── SelfEvolutionPipeline ├── SelfEvolutionAnalyzerRole
-                                 ├── SelfEvolutionPlannerRole
+        ├── PlanPipeline        ├── SelfEvolutionAnalyzerRole
+        └── SelfEvolutionPipeline ├── SelfEvolutionPlannerRole
                                  ├── SelfEvolutionCoderRole
                                  ├── SelfEvolutionReviewerRole
                                  ├── SelfEvolutionWriterRole
@@ -32,6 +32,13 @@ main.py → pipeline/      → agent.py → llm.py              (all pipelines)
                                  ├── FeatureCoderRole
                                  ├── FeatureReviewerRole
                                  ├── FeatureReportWriterRole
+                                 ├── PlanScannerRole
+                                 ├── PlanDecomposerRole
+                                 ├── PlanDependencyAnalyzerRole
+                                 ├── PlanRiskAssessorRole
+                                 ├── PlanResourceEstimatorRole
+                                 ├── PlanCrossCuttingAnalyzerRole
+                                 ├── PlanWriterRole
                                  ├── TopologyAnalyzerRole
                                  ├── TopologyDesignerRole
                                  ├── TopologyEvaluatorRole
@@ -43,7 +50,7 @@ main.py → pipeline/      → agent.py → llm.py              (all pipelines)
                                  ├── RigorDetectorRole
                                  ├── SkillAggregatorRole
                                  └── SkillReportWriterRole
-                                 (32 roles total)
+                                 (39 roles total)
 ```
 
 ### Directories
@@ -54,12 +61,18 @@ pipeline/           topology/           research/           coderpp/
 ├── research.py     ├── evaluator.py    ├── reviewer_agent.py├── reviewer_agent.py
 ├── coderpp.py      └── writer.py       └── writer.py       └── organizer.py
 ├── topology.py
-├── skill.py        skill/              feature/            self_evolution/
-├── feature.py      ├── scanner.py      ├── scanner.py      ├── analyzer.py
-├── self_evolution.py ├── detectors.py  ├── planner.py      ├── planner.py
-└── __init__.py     ├── aggregator.py   ├── coder.py        ├── coder.py
-                    └── writer.py       ├── reviewer.py     ├── reviewer.py
-                                        └── writer.py       └── writer.py
+├── skill.py        skill/              feature/            plan/
+├── feature.py      ├── scanner.py      ├── scanner.py      ├── scanner.py
+├── self_evolution.py ├── detectors.py  ├── planner.py      ├── decomposer.py
+├── plan.py         ├── aggregator.py   ├── coder.py        ├── dependency.py
+└── __init__.py     └── writer.py       ├── reviewer.py     ├── risk.py
+                                         └── writer.py       ├── resource.py
+                    self_evolution/                          ├── cross_cutting.py
+                    ├── analyzer.py                          └── writer.py
+                    ├── planner.py
+                    ├── coder.py
+                    ├── reviewer.py
+                    └── writer.py
 ```
 
 ## Two Backends
@@ -68,7 +81,7 @@ pipeline/           topology/           research/           coderpp/
 
 **Claude CLI**: `ClaudeCLILLM` subprocess `claude -p`. Single invocation (CLI is multi-turn). Tool names translated: Python → native names. Env from `claude_env_sample.json`.
 
-## Seven Pipelines
+## Eight Pipelines
 
 ### CoderPipeline
 Coder (all tools) → Reviewer (no write_file). Max 5 cycles. Coder resets `review_passed=False` each run.
@@ -85,13 +98,15 @@ head (decompose) → workers (dependency-ordered) → reviewer (score) → write
 ### CoderPPPipeline
 Multi-file code generation: organizer → workers → reviewer. Reads `.md` and `.tex` spec files.
 
-### TopologyPipeline (v1.5)
+### TopologyPipeline (v1.5, v1.9 retry loop)
 ```
 analyzer → designer → evaluator → writer → END
+                ↑          │
+                └──────────┘ (retry: max 3, score < 35/50)
 ```
 - Analyzer: Assesses 6 complexity factors
-- Designer: Proposes 2-4 candidate topologies (4 patterns)
-- Evaluator: Scores on 5 dimensions, ranks by total_score
+- Designer: Proposes 2-4 candidate topologies (4 patterns), accepts `evaluation_feedback` on retries
+- Evaluator: Scores on 5 dimensions, ranks by total_score, routes back to designer if best < 35/50
 - Writer: Produces `topology_spec.json` + `topology_report.md`
 
 ### SkillPipeline (v1.5, v2 detectors)
@@ -103,9 +118,9 @@ scanner → 4 parallel detectors → aggregator → writer → END
 - Aggregator: Deduplicates and categorizes skills across domains
 - Writer: Produces `skills.json` + `skills_report.md`
 
-### FeaturePipeline (v1.6)
+### FeaturePipeline (v1.6, v1.9 version-aware)
 ```
-scanner → planner → coder ↔ reviewer (max 5 cycles) → writer → END
+scanner → planner → coder ↔ reviewer (version-aware, max 5 versions) → writer → END
 ```
 - Scanner: Analyzes project directory → `project_context.json`
 - Planner: Creates implementation plan with `files_to_create` + `files_to_modify`
@@ -124,23 +139,36 @@ analyzer → planner → coder ↔ reviewer (max 3 iterations) → writer → EN
 - Writer: Produces `evolution_report.md`
 - Safety: Operates in current git branch; changes revertible with `git checkout -- .`
 
+### PlanPipeline (v1.9)
+```
+scanner → decomposer → [dependency ‖ risk ‖ resource ‖ cross-cutting] → writer → END
+```
+- Scanner: Analyzes project directory → `project_context.json`. Skips when `file_manifest` exists (resume).
+- Decomposer: Builds hierarchical task tree → `task_tree.json`. Skips when `task_tree` exists. Falls back to template.
+- 4 parallel analyzers: Dependency graph, Risk matrix, Resource estimates, Cross-cutting concerns
+- Writer: Synthesizes → `plan_spec.json` + `plan_report.md`
+
 ## Eight Tools + ToolRegistry (`tools/`)
-`read_file`, `write_file`, `write_lines` (preferred for code), `run_command` (30s), `call_claude` (120s), `web_search` (DuckDuckGo), `web_fetch` (urllib, 20s), `download_file` (urllib, 30s). Modular package: `registry.py` + `functions.py` + `feature_tools.py`. `ToolRegistry` with 23 role-specific classmethods — no duplicated definitions. Tools assigned via `tools_config.json` (single source of truth).
+`read_file`, `write_file`, `write_lines` (preferred for code), `run_command` (30s), `call_claude` (120s), `web_search` (DuckDuckGo), `web_fetch` (urllib, 20s), `download_file` (urllib, 30s). Modular package: `registry.py` + `functions.py` + `feature_tools.py`. `ToolRegistry` with 35 role-specific classmethods — no duplicated definitions. Tools assigned via `tools_config.json` (single source of truth).
 
 ## Circuit Breakers
 
 **Agent-level** (`agent.py`):
+- **Built-in retry**: `AgentRole._MAX_RETRIES=3` — auto version-bump retry with checkpoint context reuse. All agents get this for free.
 - Force wrap-up at ≤3 steps (forbid all tools except write_file)
 - Error spiral: 2 consecutive errors → forced best-effort summary
 - Mid-loop write reminder at ~2/3 of max steps
 - Post-loop forced summary if all steps exhausted
-- Claude CLI retry on timeout/error
+- Claude CLI: if files were written before timeout, treat as success
 
-**Pipeline-level** (`pipeline.py`):
+**Pipeline-level** (`pipeline/`):
 - Head agent: 120s timeout → fallback decomposition
 - Workers: 600s timeout, max 2 concurrent, stop-on-failure blocks downstream
 - Version-bump retry: max 3 retries, max 4 versions, context reuse via checkpoints
+- Topology designer↔evaluator retry: max 3 iterations, score threshold 35/50
+- Feature coder↔reviewer version-aware retry: max 5 versions
 - MD5 dedup; router always moves forward (`researched_partial` accepted)
+- Guard clauses for resume: scanner/decomposer skip when state already populated
 - All stages have deterministic fallbacks
 
 ## Key Design Decisions
@@ -169,6 +197,7 @@ analyzer → planner → coder ↔ reviewer (max 3 iterations) → writer → EN
 | v1.6.1 | Jun 2026 | Dependency injection fixes: Coder, Skill, CoderPP pipelines |
 | v1.7 | Jun 2026 | tools_config.json, code dedup (~200 lines), dead code removal, backend-agnostic defaults |
 | v1.8 | Jun 2026 | Self-Evolution Pipeline, 175 behavioral tests, 32 roles, 7 pipelines, 379 tests |
+| **v1.9** | Jun 2026 | Plan Pipeline, AgentRole built-in retry, Topology+Feature retry loops, 39 roles, 8 pipelines, 403 tests, default parallel testing |
 
 ### Related
 [[version_diffs]], [[key_updates]], [[oop_refactoring]]

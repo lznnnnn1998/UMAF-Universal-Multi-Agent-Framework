@@ -1,6 +1,6 @@
 ---
 name: pipeline-robustness
-description: "v1.4 pipeline robustness — dependency stop-on-failure, version-bump retry with context reuse, honest parse_result, worker retry state machine"
+description: "v1.4→v2.0 pipeline robustness — dependency stop-on-failure, version-bump retry, honest parse_result, worker retry state machine, AgentRole built-in retry, topology feedback loop, feature multi-coder parallelism, cross-coder integration verification"
 metadata:
   type: project
 ---
@@ -40,6 +40,28 @@ Topic: "Propose a brand new optimized attention mechanism"
 **Why:** Without these fixes, the dependency graph was decorative — workers ran in order but failures didn't propagate, and retries started from scratch with no memory of prior attempts.
 
 **How to apply:** When adding new pipeline stages with dependencies, use `_run_workers_with_deps` (not raw `_run_parallel_agents`), implement honest `parse_result` that checks file existence, and route through the `worker_retry` state machine for automatic retry.
+
+## v1.9 Additions (June 2026)
+
+### Built-in AgentRole Retry
+`AgentRole.execute()` now has an automatic version-bump retry loop with `_MAX_RETRIES=3`. Every agent — in any pipeline — gets this for free without pipeline-level code. On failure, retries with `version+1` → `BaseAgent(version=current_version)` → `CheckpointManager.load_previous()` restores prior messages. Each attempt produces a separate checkpoint and log file.
+
+### TopologyPipeline Designer↔Evaluator Feedback Loop
+Designer proposes topologies → Evaluator scores (5 dimensions, each 1-10) → if best < 35/50 and retries remain, routes back to designer with `evaluation_feedback` listing low-scoring dimensions. Max 3 retries (designer runs up to 4 times). `_MAX_RETRIES=3`, `_SCORE_THRESHOLD=35`.
+
+### FeaturePipeline Version-Aware Retry
+Coder↔reviewer loop upgraded from simple `iteration` counter to version-bump pattern matching CoderPP. `_MAX_VERSIONS=5`, `version` field in `FeatureState`. Each failed review bumps version → coder loads prior checkpoint context. `project_dir` passthrough to coder/reviewer nodes.
+
+## v2.0 Additions (June 2026)
+
+### Multi-Coder Parallelism with Dependency Injection
+Feature Pipeline v2 replaces single `_coder_node` with `_coders_node` that groups `sub_tasks` into topological levels via `BasePipeline._topological_levels()`. Within each level coders run in parallel via `_run_parallel_agents()`. Dependency injection across levels: `completed` dict maps sub_task_id and module_name to outputs → coders at level[i] receive `_dependency_outputs` from level[i-1] → verify with DEPENDENCY_VERIFIED / DEPENDENCY_ISSUE: tokens. Stop-on-failure: if a level has failures, remaining levels are deferred for retry. Fallback to single-coder when no sub_tasks.
+
+### Cross-Coder Integration Review
+Reviewer verifies multi-coder outputs across 5 dimensions: dependency consumption, import resolution across modules, interface matching, data flow through module chain, integration tests. `cross_coder_issues` extraction with `CROSS_CODER_ISSUE:` token scanning. All `all_coder_outputs` passed to reviewer via `execute()` kwargs.
+
+### Evidence-Based Skill Proficiency
+Skill Pipeline v2 replaces count-based proficiency (`beginner=1, intermediate=2, advanced=3+`) with `_assess_proficiency()` — depth (signal specificity weight), consistency (cross-file distribution), integration (co-occurrence bonus), negative penalty (false-positive correction). `evidence_refs` on every skill.
 
 ### Related
 [[version_diffs]], [[key_updates]], [[architecture_progress]]

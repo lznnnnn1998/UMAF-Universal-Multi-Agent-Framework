@@ -1,13 +1,13 @@
 ---
 name: oop-refactoring
-description: OOP reorganization — 5-layer class hierarchy with 32 concrete roles and 7 pipeline classes. v1.4+, updated v1.8.
+description: OOP reorganization — 5-layer class hierarchy with 39 concrete roles and 8 pipeline classes. v1.4+, updated v2.0.
 metadata: 
   node_type: memory
   type: project
   originSessionId: 9c942f95-5fb5-4276-8e53-c16059ca5e31
 ---
 
-## OOP Architecture (v1.4+, updated v1.8)
+## OOP Architecture (v1.4+, updated v1.9)
 
 Reorganized UMAF from procedural/functional to object-oriented with a 5-layer class hierarchy.
 
@@ -17,7 +17,7 @@ Reorganized UMAF from procedural/functional to object-oriented with a 5-layer cl
 
 ### Layer 1 — Infrastructure
 - `LLMProvider` ABC + `DeepSeekProvider` + `ClaudeCLIProvider` (llm.py) — unified backend interface
-- `ToolRegistry` class (tools/registry.py) — centralized tool specs, 23 role-specific classmethods
+- `ToolRegistry` class (tools/registry.py) — centralized tool specs, 35 role-specific classmethods
 - `ClaudeConfig` class (claude_config.py) — lazy-loading config
 
 ### Layer 2 — Agent Core
@@ -25,7 +25,7 @@ Reorganized UMAF from procedural/functional to object-oriented with a 5-layer cl
 - `AgentRole` ABC — template method: `tools_for_backend()`, `build_task()`, `parse_result()`, `execute()`
 - `BaseDecomposerRole` — shared decomposition logic with `_extract_json_array()`
 
-### Layer 3 — 32 Concrete Roles
+### Layer 3 — 39 Concrete Roles
 
 **Coder pipeline** (pipeline/coder.py):
 - `CoderRole`, `ReviewerRole`
@@ -72,11 +72,20 @@ Reorganized UMAF from procedural/functional to object-oriented with a 5-layer cl
 - `SelfEvolutionReviewerRole` (reviewer.py)
 - `SelfEvolutionWriterRole` (writer.py)
 
-### Layer 4 — 7 Pipeline Classes (pipeline/)
-- `BasePipeline` → `CoderPipeline`, `ResearchPipeline`, `CoderPPPipeline`, `TopologyPipeline`, `SkillPipeline`, `FeaturePipeline`, `SelfEvolutionPipeline`
+**Plan pipeline** (plan/):
+- `PlanScannerRole` (scanner.py)
+- `PlanDecomposerRole` (decomposer.py)
+- `PlanDependencyAnalyzerRole` (dependency.py)
+- `PlanRiskAssessorRole` (risk.py)
+- `PlanResourceEstimatorRole` (resource.py)
+- `PlanCrossCuttingAnalyzerRole` (cross_cutting.py)
+- `PlanWriterRole` (writer.py)
+
+### Layer 4 — 8 Pipeline Classes (pipeline/)
+- `BasePipeline` → `CoderPipeline`, `ResearchPipeline`, `CoderPPPipeline`, `TopologyPipeline`, `SkillPipeline`, `FeaturePipeline`, `SelfEvolutionPipeline`, `PlanPipeline`
 
 ### Layer 5 — State Types (pipeline/*.py)
-- `MultiAgentState`, `ResearchState`, `CoderPPState`, `TopologyState`, `SkillState`, `FeatureState`, `SelfEvolutionState`
+- `MultiAgentState`, `ResearchState`, `CoderPPState`, `TopologyState`, `SkillState`, `FeatureState`, `SelfEvolutionState`, `PlanState`
 
 ### Abstract Base Classes
 - `AgentRole` (ABC) — base for all agent roles

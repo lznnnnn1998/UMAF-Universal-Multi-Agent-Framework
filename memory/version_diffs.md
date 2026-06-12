@@ -1,10 +1,99 @@
 ---
 name: version-diffs
-description: "Complete changelog: v1.0→v1.8 (12+8 bug fixes, backend-aware agents, Python 3.11, OOP, 7 pipelines, Self-Evolution, 379 tests)"
+description: "Complete changelog: v1.0→v2.0 (Feature Pipeline v2 multi-coder parallelism, Skill Pipeline v2 evidence-based assessment, 8 pipelines, 39 roles, 480 tests)"
 metadata: 
   node_type: memory
   type: project
   originSessionId: 9c942f95-5fb5-4276-8e53-c16059ca5e31
+---
+
+## v2.0 (June 2026) — Feature Pipeline v2 + Skill Pipeline v2
+
+**Why:** Transform single-agent pipelines into multi-agent parallel systems with dependency-aware execution; replace simplistic count-based skill detection with evidence-based, multi-dimensional assessment that works across any artifact type.
+
+### Feature Pipeline v2 — Multi-Coder Parallelism
+- Planner now produces `sub_tasks` with dependency graph (like Research head_agent)
+- `_coders_node` replaces single `_coder_node` — coders execute in topological levels via `BasePipeline._topological_levels()`
+- Within each level coders run in parallel via `_run_parallel_agents()` using `_feature_coder_worker()` entry point
+- Dependency injection: coders at level[i] receive and verify outputs from level[i-1] via `_dependency_outputs` → `completed` dict
+- Cross-coder integration review (5 dimensions: dependency consumption, import resolution, interface matching, data flow, integration tests)
+- Dependency verification tokens: DEPENDENCY_VERIFIED / DEPENDENCY_ISSUE:
+- 3 new FeatureState fields: `sub_tasks`, `coder_outputs`, `dependency_graph`
+- `_MAX_CODER_RETRIES=3` with version-bump loop; fallback to single-coder when no sub_tasks
+- `_build_dependency_graph()` for display and analysis
+- **Verified**: 6 coders, 4 topological levels, all deps verified, REVIEW_PASSED in 1 iteration
+
+### Skill Pipeline v2 — Evidence-Based Detection
+- **Qualitative proficiency**: `_assess_proficiency()` replaces count-based model with multi-dimensional scoring (depth × consistency × integration − penalties)
+- **evidence_refs**: every detected skill now has specific file paths with signal descriptions
+- **19 domains** (up from 9): added Computer Vision, RL, Networking, OS, Embedded, DevOps, Data Engineering, Frontend, Mobile, Blockchain
+- **Multi-word phrase matching** reduces false positives; negative signals exclude false matches
+- **25+ modern tools**: uv, ruff, biome, pnpm, bun, Svelte, SolidJS, Playwright, Vitest, TailwindCSS, shadcn/ui, etc.
+- **Version detection** from config files for tool proficiency
+- **Project vs ecosystem tool distinction**
+- **Scanner v2**: file complexity scoring via `_STRUCTURAL_KEYWORDS`, generated/minified file filtering, 4000-char samples, `key_files` list
+- **Aggregator v2**: `_infer_category()` replaces hardcoded `_SKILL_CATEGORY_MAP`, evidence merging across detectors, `cross_referenced` flag with confidence boost, `skill_graph` generation
+- **Writer v2**: `_ARTIFACT_EXPECTED_AREAS` for Skill Gap Analysis, `_ARTIFACT_CATEGORY_ORDER` for type-specific section ordering, `_ARTIFACT_TOOL_CATEGORY_ORDER` for tool table grouping
+
+### Test Expansion
+- 480 tests (up from 403): test_skill.py +2255, test_feature.py +905 (multi-coder execution, topological levels, dependency injection, cross-coder verification)
+- 7.91s runtime (parallel, default)
+
+### Verified
+- Feature Pipeline v2: 6 coders, 4 topological levels, all dependency verification passed, REVIEW_PASSED in 1 iteration
+- Skill Pipeline v2: enhanced detection with 19 domains, 25+ tools, evidence_refs, skill_graph — end-to-end verified
+- All 480 tests pass
+
+## v1.9 (June 2026) — Plan Pipeline + Retry Loops + Test Optimization
+
+**Why:** Enable structured implementation planning from natural language descriptions; add built-in agent retry so every pipeline gets version-bump resilience for free; add topology designer↔evaluator feedback loop; upgrade Feature pipeline to match CoderPP retry capabilities; optimize test suite with default parallel execution.
+
+### Plan Pipeline (8th pipeline)
+- 6-node fan-out/fan-in graph: scanner → decomposer → 4 parallel analyzers → writer → END
+- 7 AgentRoles in `plan/`: `PlanScannerRole`, `PlanDecomposerRole`, `PlanDependencyAnalyzerRole`, `PlanRiskAssessorRole`, `PlanResourceEstimatorRole`, `PlanCrossCuttingAnalyzerRole`, `PlanWriterRole`
+- Transforms natural language task descriptions into structured implementation plans with dependency graphs, risk matrices, resource estimates, and cross-cutting concern maps
+- Guard clauses: scanner skips when `file_manifest` exists; decomposer skips when `task_tree.tree` exists — enables pipeline resume and testable pre-populated state
+- 4 parallel analyzers (1 for claude_cli, 4 for deepseek); writer produces `plan_spec.json` + `plan_report.md`
+
+### AgentRole Built-in Retry
+- `_MAX_RETRIES = 3` in `AgentRole` base class with auto version-bump loop in `execute()`
+- Every agent gets retry resilience without pipeline-level code — each attempt produces separate checkpoint + log file
+- Prior context loaded via `CheckpointManager.load_previous()` on each retry
+- `ClaudeCLILLM._invoke_stream()`: simplified — if files were written before timeout, treat as success rather than false-negative failure
+
+### TopologyPipeline Retry Loop
+- Designer↔evaluator feedback loop: if best score < 35/50 and retries remain, routes back to designer with dimensional feedback
+- `_MAX_RETRIES = 3`, `_SCORE_THRESHOLD = 35`
+- New `iteration` and `evaluation_feedback` fields in `TopologyState`
+- Designer accepts `evaluation_feedback` parameter for targeted improvements
+- Evaluator outputs `evaluation_feedback` listing low-scoring dimensions
+
+### FeaturePipeline Version-Aware Retry
+- Coder↔reviewer loop upgraded from simple `iteration` counter to version-bump pattern matching CoderPP
+- `_MAX_VERSIONS = 5`, `version` field in `FeatureState` (14 fields total)
+- `project_dir` passthrough to coder and reviewer nodes (was missing — agents couldn't find project files)
+- Router uses `version > _MAX_VERSIONS` instead of `iteration >= 5`
+
+### ToolRegistry & Config
+- 7 new classmethods for Plan pipeline (scanner, decomposer, 4 analyzers, writer) — 35 total
+- `tools_config.json`: Added `plan` section with per-role tool assignments
+- `main.py`: 8 modes — coder, research, coderpp, topology, skill, feature, self_evolution, plan
+- `pipeline/__init__.py`: exports `PlanPipeline` + `PlanState`
+
+### Test Optimization
+- **Removed duplicate suite**: test_feature_v2.py deleted (533 lines, 55 tests — identical coverage to test_feature.py)
+- **Default parallelism**: `-n auto --timeout=30` in `pyproject.toml` addopts; `pythonpath = ["."]`
+- **Fixed missing mocks**: SelfEvolutionWriterRole (1 slow test, was 5.48s), CoderRole (2 tests), decompose functions (5 tests)
+- **New tests**: test_plan.py (integration tests with guard-aware mocking); test_topology.py (retry loop tests); test_feature.py (3 versioning tests)
+- **Dependencies**: `pytest-xdist>=3.0`, `pytest-timeout>=2.0` added to requirements.txt
+
+### Verified
+- 403/403 tests pass in 3.72s (parallel, default) — down from 458/458 in ~7s
+- 8 pipelines, 39 AgentRoles, 35 ToolRegistry methods, 8 tools
+
+### Related
+[[architecture_progress]], [[key_updates]], [[oop_refactoring]]
+
 ---
 
 ## v1.8 (June 2026) — Self-Evolution Pipeline + Test Enhancement

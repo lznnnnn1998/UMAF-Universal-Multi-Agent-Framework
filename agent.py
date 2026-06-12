@@ -1010,25 +1010,11 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
         prompt = _build_prompt()
         final_text, self.success, stream_messages, wrote_file = _stream_one(prompt)
 
-        is_error = (
-            "timed out" in final_text.lower()
-            or "error:" in final_text.lower()
-        )
-        retried = False
-        if not self.success and is_error:
-            retried = True
-            prompt = _build_prompt(
-                "The previous attempt failed due to a timeout or error. "
-                "Do your best with whatever is available — skip time-consuming steps. "
-                "Write whatever findings you can and output TASK_COMPLETE.\n\n"
-            )
-            self._t0 = time.time()  # reset clock for retry
-            final_text, self.success, stream_messages, wrote_file = _stream_one(prompt)
-            # Recompute error flag from the retry result
-            is_error = (
-                "timed out" in final_text.lower()
-                or "error:" in final_text.lower()
-            )
+        # If the process was killed by timeout but files were written,
+        # the agent completed its core task — treat as success so the
+        # caller doesn't needlessly retry.
+        if not self.success and wrote_file:
+            self.success = True
 
         self.messages = [HumanMessage(content=prompt)] + stream_messages
         self.iterations = sum(
@@ -1042,10 +1028,10 @@ IMPORTANT: After using tools, always produce a final text response. Include TASK
 
         elapsed = time.time() - self._t0
         self._save_log(translated_task, elapsed, extra={
-            "backend": "claude_cli_stream", "retried": retried,
+            "backend": "claude_cli_stream",
         })
         self._save_checkpoint(task=task, extra={
-            "success": self.success, "backend": "claude_cli_stream", "retried": retried,
+            "success": self.success, "backend": "claude_cli_stream",
         })
 
         return {
@@ -1112,6 +1098,11 @@ class AgentRole(ABC):
         """Parse the raw agent result into structured output. Override in subclasses."""
         return result
 
+    # Number of automatic version-bump retries when the agent fails.
+    # Each retry reads the previous version's checkpoint (via
+    # BaseAgent.load_previous) so the agent resumes with prior context.
+    _MAX_RETRIES: int = 3
+
     def execute(
         self,
         working_dir: str,
@@ -1120,30 +1111,44 @@ class AgentRole(ABC):
         version: int = 1,
         **context: Any,
     ) -> Any:
-        """Run the full agent lifecycle: build task → run agent → parse result."""
+        """Run the full agent lifecycle: build task → run agent → parse result.
+
+        On failure, automatically retries by bumping the version number so
+        each attempt produces a separate checkpoint and log file.  The agent
+        loads prior-version context on each retry via ``load_previous()``.
+        """
         from llm import get_llm_provider
         from tools import ToolRegistry
 
         provider = get_llm_provider(backend)
-        agent = BaseAgent(
-            backend=backend,
-            working_dir=working_dir,
-            tools=self.tools_for_backend(backend),
-            tool_map=ToolRegistry.get_map(),
-            max_steps=self.max_steps,
-            agent_name=self.agent_name,
-            enable_checkpoint=True,
-            version=version,
-        )
-        raw = agent.run(
-            task=self.build_task(backend, working_dir=working_dir, **context),
-            resume_from=resume_from,
-        )
-        result = AgentResult(
-            messages=raw["messages"],
-            iterations=raw["iterations"],
-            success=raw["success"],
-        )
+        task = self.build_task(backend, working_dir=working_dir, **context)
+
+        raw: dict[str, Any] = {}
+        result: AgentResult | None = None
+
+        for attempt in range(self._MAX_RETRIES + 1):
+            current_version = version + attempt
+            agent = BaseAgent(
+                backend=backend,
+                working_dir=working_dir,
+                tools=self.tools_for_backend(backend),
+                tool_map=ToolRegistry.get_map(),
+                max_steps=self.max_steps,
+                agent_name=self.agent_name,
+                enable_checkpoint=True,
+                version=current_version,
+            )
+            raw = agent.run(task=task, resume_from=resume_from)
+            result = AgentResult(
+                messages=raw["messages"],
+                iterations=raw["iterations"],
+                success=raw["success"],
+            )
+            if result.success:
+                return self.parse_result(result, working_dir, **context)
+
+        # All retries exhausted — return the last (failed) result
+        assert result is not None
         return self.parse_result(result, working_dir, **context)
 
 

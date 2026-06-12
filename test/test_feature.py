@@ -11,6 +11,8 @@ import test.conftest  # noqa: F401 — loads tools_config.json, tmpdir fixture
 from test.conftest import make_agent_result as _make_agent_result
 
 from pipeline import FeaturePipeline, FeatureState
+from pipeline.base import BasePipeline
+import pipeline.feature as pfeature
 from feature.scanner import FeatureScannerRole
 from feature.planner import FeaturePlannerRole
 from feature.coder import FeatureCoderRole
@@ -247,7 +249,7 @@ class TestCoderRole:
         }
         with open(os.path.join(tmpdir, "implementation_plan.json"), "w") as f:
             json.dump(plan, f)
-        # Create the files on disk
+        # Create the files on disk — source files live under project_dir
         os.makedirs(os.path.join(tmpdir, "src"), exist_ok=True)
         os.makedirs(os.path.join(tmpdir, "tests"), exist_ok=True)
         with open(os.path.join(tmpdir, "src", "new.py"), "w") as f:
@@ -255,7 +257,7 @@ class TestCoderRole:
 
         role = FeatureCoderRole()
         mock = _make_agent_result([])
-        result = role.parse_result(mock, working_dir=tmpdir)
+        result = role.parse_result(mock, working_dir=tmpdir, project_dir=tmpdir)
         assert len(result["changed_files"]) >= 1
         assert "src/new.py" in result["changed_files"]
 
@@ -377,18 +379,805 @@ class TestWriterRole:
 
 class TestFeatureState:
     def test_all_required_fields(self):
-        """FeatureState should have the 12 essential fields."""
+        """FeatureState should have the 14 essential fields."""
         fields = FeatureState.__annotations__
         required = [
-            "input_spec", "working_dir", "backend", "status",
-            "iteration", "project_context", "implementation_plan",
-            "changed_files", "review_passed", "review_issues", "feature_report",
+            "input_spec", "working_dir", "backend", "project_dir",
+            "status", "iteration", "version", "project_context",
+            "implementation_plan", "changed_files", "review_passed",
+            "review_issues", "feature_report",
         ]
         for field in required:
             assert field in fields, f"Missing field: {field}"
 
     def test_is_typed_dict(self):
         assert issubclass(FeatureState, dict) or hasattr(FeatureState, "__annotations__")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Multi-coder state tests (v2 fields)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMultiCoderState:
+    """Tests for new FeatureState fields (sub_tasks, coder_outputs, dependency_graph)."""
+
+    def test_new_fields_exist(self):
+        """FeatureState should include the 3 new multi-coder fields."""
+        fields = FeatureState.__annotations__
+        new_fields = ["sub_tasks", "coder_outputs", "dependency_graph"]
+        for field in new_fields:
+            assert field in fields, f"Missing multi-coder field: {field}"
+
+    def test_initial_state_includes_new_fields(self):
+        """_build_initial_state must initialize the new fields to safe defaults."""
+        p = FeaturePipeline(working_dir="/tmp/test")
+        state = p._build_initial_state("Feature X", [])
+        assert state["sub_tasks"] == []
+        assert state["coder_outputs"] == []
+        assert state["dependency_graph"] == {}
+
+    def test_sub_tasks_field_is_mutable_list(self):
+        """sub_tasks should be a list so coders_node can extend it."""
+        p = FeaturePipeline(working_dir="/tmp/test")
+        state = p._build_initial_state("Feature X", [])
+        state["sub_tasks"].append({"id": 1, "module_name": "test"})
+        assert len(state["sub_tasks"]) == 1
+
+    def test_coder_outputs_field_is_mutable_list(self):
+        """coder_outputs should be a list for collecting per-coder results."""
+        p = FeaturePipeline(working_dir="/tmp/test")
+        state = p._build_initial_state("Feature X", [])
+        state["coder_outputs"].append({"sub_task_id": 1, "files": ["a.py"]})
+        assert len(state["coder_outputs"]) == 1
+
+    def test_dependency_graph_field_is_mutable_dict(self):
+        """dependency_graph should be a dict for nodes/edges/levels."""
+        p = FeaturePipeline(working_dir="/tmp/test")
+        state = p._build_initial_state("Feature X", [])
+        state["dependency_graph"]["nodes"] = []
+        assert "nodes" in state["dependency_graph"]
+
+    def test_status_can_be_planned_with_deps(self):
+        """planned_with_deps status flows to coders node."""
+        p = FeaturePipeline(working_dir="/tmp/test")
+        state = p._build_initial_state("Feature X", [])
+        state["status"] = "planned_with_deps"
+        assert state["status"] == "planned_with_deps"
+
+    def test_status_can_be_coders_done(self):
+        """coders_done status flows to reviewer node."""
+        p = FeaturePipeline(working_dir="/tmp/test")
+        state = p._build_initial_state("Feature X", [])
+        state["status"] = "coders_done"
+        assert state["status"] == "coders_done"
+
+    def test_max_coder_retries_exists(self):
+        """_MAX_CODER_RETRIES replaces the old _MAX_VERSIONS."""
+        assert hasattr(FeaturePipeline, "_MAX_CODER_RETRIES")
+        assert FeaturePipeline._MAX_CODER_RETRIES == 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Topological levels tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestTopologicalLevels:
+    """Tests that _topological_levels correctly groups sub-tasks with/without
+    dependencies, handles single-item degradation, and cycle detection."""
+
+    def test_no_dependencies_single_level(self):
+        """Tasks without dependencies all land in one level."""
+        tasks = [
+            {"id": 1, "module_name": "a", "dependencies": []},
+            {"id": 2, "module_name": "b", "dependencies": []},
+            {"id": 3, "module_name": "c", "dependencies": []},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 1
+        assert len(levels[0]) == 3
+
+    def test_single_item_degradation(self):
+        """Single sub_task produces one level (degraded to flat parallelism)."""
+        tasks = [{"id": 1, "module_name": "only", "dependencies": []}]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 1
+        assert len(levels[0]) == 1
+
+    def test_empty_tasks(self):
+        """Empty task list returns a single empty level (existing behavior)."""
+        levels = BasePipeline._topological_levels([])
+        # When no tasks exist, [list([])] = [[]] — one level with no tasks
+        assert len(levels) == 1
+        assert levels[0] == []
+
+    def test_linear_chain_two_levels(self):
+        """A -> B -> C produces 3 levels."""
+        tasks = [
+            {"id": 1, "module_name": "a", "dependencies": []},
+            {"id": 2, "module_name": "b", "dependencies": [1]},
+            {"id": 3, "module_name": "c", "dependencies": [2]},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 3
+        assert levels[0][0]["module_name"] == "a"
+        assert levels[1][0]["module_name"] == "b"
+        assert levels[2][0]["module_name"] == "c"
+
+    def test_diamond_dependency(self):
+        """A has no deps; B and C depend on A; D depends on B and C."""
+        tasks = [
+            {"id": 1, "module_name": "a", "dependencies": []},
+            {"id": 2, "module_name": "b", "dependencies": [1]},
+            {"id": 3, "module_name": "c", "dependencies": [1]},
+            {"id": 4, "module_name": "d", "dependencies": [2, 3]},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 3
+        # Level 0: a
+        assert {t["module_name"] for t in levels[0]} == {"a"}
+        # Level 1: b and c (parallel)
+        assert {t["module_name"] for t in levels[1]} == {"b", "c"}
+        # Level 2: d
+        assert {t["module_name"] for t in levels[2]} == {"d"}
+
+    def test_mixed_dependencies_and_independent(self):
+        """Tasks with and without deps; independents land in level 0."""
+        tasks = [
+            {"id": 1, "module_name": "independent", "dependencies": []},
+            {"id": 2, "module_name": "depends_on_indep", "dependencies": [1]},
+            {"id": 3, "module_name": "also_independent", "dependencies": []},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 2
+        assert len(levels[0]) == 2  # both independents
+        assert len(levels[1]) == 1  # the dependent
+
+    def test_string_dependencies(self):
+        """Dependencies can reference by module_name (str)."""
+        tasks = [
+            {"id": 1, "module_name": "base", "dependencies": []},
+            {"id": 2, "module_name": "ext", "dependencies": ["base"]},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 2
+
+    def test_dict_dependency(self):
+        """Dependencies specified as dicts with module_name."""
+        tasks = [
+            {"id": 1, "module_name": "base", "dependencies": []},
+            {"id": 2, "module_name": "ext",
+             "dependencies": [{"module_name": "base", "id": 1}]},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) == 2
+
+    def test_cycle_detection_produces_single_warning_level(self):
+        """A cycle (A→B→A) is detected and broken, producing a level."""
+        tasks = [
+            {"id": 1, "module_name": "a", "dependencies": ["b"]},
+            {"id": 2, "module_name": "b", "dependencies": ["a"]},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        # Should produce at least one level (cycle broken)
+        assert len(levels) >= 1
+        all_tasks = {t["module_name"] for level in levels for t in level}
+        assert all_tasks == {"a", "b"}
+
+    def test_three_way_cycle(self):
+        """A→B→C→A cycle is detected and broken."""
+        tasks = [
+            {"id": 1, "module_name": "a", "dependencies": ["b"]},
+            {"id": 2, "module_name": "b", "dependencies": ["c"]},
+            {"id": 3, "module_name": "c", "dependencies": ["a"]},
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        assert len(levels) >= 1
+        all_tasks = {t["module_name"] for level in levels for t in level}
+        assert all_tasks == {"a", "b", "c"}
+
+    def test_missing_dependency_ignored(self):
+        """Dependency to a non-existent task is silently ignored."""
+        tasks = [
+            {"id": 1, "module_name": "a", "dependencies": []},
+            {"id": 2, "module_name": "b", "dependencies": [999]},  # non-existent
+        ]
+        levels = BasePipeline._topological_levels(tasks)
+        # Both tasks should appear (dep to 999 ignored = no dep)
+        all_tasks = {t["module_name"] for level in levels for t in level}
+        assert all_tasks == {"a", "b"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Planner decomposition tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPlannerDecomposition:
+    """Tests that FeaturePlannerRole.parse_result extracts sub_tasks, reads
+    decomposition.json, and produces fallback sub_tasks."""
+
+    def test_parse_result_extracts_sub_tasks_from_messages(self):
+        """parse_result should extract sub_tasks from agent messages."""
+        role = FeaturePlannerRole()
+        mock = _make_agent_result([
+            {"content": '{"files_to_create": [{"path": "a.py"}], '
+                        '"files_to_modify": [], '
+                        '"sub_tasks": [{"id": 1, "module_name": "core", '
+                        '"description": "Core logic", "dependencies": [], '
+                        '"files_to_create": [{"path": "a.py", "description": ""}], '
+                        '"files_to_modify": [], "test_files": []}]}',
+             "type": "AIMessage"},
+        ])
+        result = role.parse_result(mock, working_dir="/tmp")
+        assert "sub_tasks" in result
+        assert len(result["sub_tasks"]) == 1
+        assert result["sub_tasks"][0]["module_name"] == "core"
+
+    def test_parse_result_writes_decomposition_json(self, tmpdir):
+        """parse_result should write decomposition.json to working_dir."""
+        role = FeaturePlannerRole()
+        mock = _make_agent_result([
+            {"content": '{"files_to_create": [{"path": "a.py"}], '
+                        '"files_to_modify": [], '
+                        '"sub_tasks": [{"id": 1, "module_name": "core", '
+                        '"description": "Core", "dependencies": [], '
+                        '"files_to_create": [{"path": "a.py", "description": ""}], '
+                        '"files_to_modify": [], "test_files": []}]}',
+             "type": "AIMessage"},
+        ])
+        role.parse_result(mock, working_dir=tmpdir)
+        decomp_path = os.path.join(tmpdir, "decomposition.json")
+        assert os.path.isfile(decomp_path)
+        with open(decomp_path) as f:
+            decomp = json.load(f)
+        assert len(decomp) == 1
+        assert decomp[0]["module_name"] == "core"
+
+    def test_fallback_sub_tasks_when_missing(self, tmpdir):
+        """When sub_tasks is missing from plan, fallback is generated."""
+        role = FeaturePlannerRole()
+        mock = _make_agent_result([
+            {"content": '{"files_to_create": [{"path": "src/a.py"}], '
+                        '"files_to_modify": [{"path": "src/b.py", "section": "end", '
+                        '"change": "add", "description": "x"}]}',
+             "type": "AIMessage"},
+        ])
+        result = role.parse_result(mock, working_dir=tmpdir)
+        assert "sub_tasks" in result
+        assert len(result["sub_tasks"]) >= 1
+        # Verify decomposition.json was written
+        decomp_path = os.path.join(tmpdir, "decomposition.json")
+        assert os.path.isfile(decomp_path)
+
+    def test_single_task_fallback(self):
+        """Empty plan produces a single fallback sub_task."""
+        plan = {"feature": "Test", "files_to_create": [], "files_to_modify": []}
+        from feature.planner import FeaturePlannerRole
+        sub_tasks = FeaturePlannerRole._generate_sub_tasks_from_plan(plan)
+        assert len(sub_tasks) == 1
+        assert sub_tasks[0]["module_name"] == "feature_implementation"
+        assert sub_tasks[0]["dependencies"] == []
+        assert sub_tasks[0]["id"] == 1
+
+    def test_groups_files_by_module(self):
+        """Files from different directories produce separate sub_tasks."""
+        plan = {
+            "files_to_create": [
+                {"path": "src/auth/login.py", "description": "Login"},
+                {"path": "src/api/routes.py", "description": "Routes"},
+            ],
+            "files_to_modify": [],
+        }
+        from feature.planner import FeaturePlannerRole
+        sub_tasks = FeaturePlannerRole._generate_sub_tasks_from_plan(plan)
+        assert len(sub_tasks) == 2
+        module_names = {t["module_name"] for t in sub_tasks}
+        assert module_names == {"auth", "api"}
+
+    def test_validate_dependency_references(self):
+        """Unresolved dependency references produce warnings and are removed."""
+        role = FeaturePlannerRole()
+        mock = _make_agent_result([
+            {"content": '{"files_to_create": [], "files_to_modify": [], '
+                        '"sub_tasks": ['
+                        '{"id": 1, "module_name": "a", "dependencies": [], '
+                        '"files_to_create": [], "files_to_modify": [], "test_files": []},'
+                        '{"id": 2, "module_name": "b", "dependencies": ["c"], '
+                        '"files_to_create": [], "files_to_modify": [], "test_files": []}'
+                        ']}',
+             "type": "AIMessage"},
+        ])
+        result = role.parse_result(mock, working_dir="/tmp")
+        # sub_task b depends on "c" which doesn't exist — should be removed
+        task_b = [t for t in result["sub_tasks"] if t["module_name"] == "b"][0]
+        assert task_b["dependencies"] == []
+
+    def test_fallback_plan_includes_sub_tasks(self):
+        """_fallback_plan should include generated sub_tasks."""
+        plan = FeaturePlannerRole._fallback_plan("/tmp", "Fallback feature")
+        assert "sub_tasks" in plan
+        assert len(plan["sub_tasks"]) >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Multi-coder pipeline integration tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMultiCoderPipeline:
+    """Integration tests with mocked coders at two topological levels, verifying
+    dependency injection, parallel execution, and cross-coder review."""
+
+    def test_two_level_execution_with_mocked_coders(self, tmpdir):
+        """Coders at level[0] run, then level[1] coders receive their outputs."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.coder as fcode
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        # Pre-create context, plan, and decomposition files
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {
+            "files_to_create": [],
+            "files_to_modify": [],
+            "test_files": [],
+            "sub_tasks": [
+                {"id": 1, "module_name": "base", "dependencies": [],
+                 "files_to_create": [{"path": "base.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+                {"id": 2, "module_name": "ext", "dependencies": [1],
+                 "files_to_create": [{"path": "ext.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+            ],
+        }
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        # Mock planner to return the plan with sub_tasks
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan):
+
+            # Build pipeline and invoke graph through to coders
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+
+            # Mock the coder worker and reviewer
+            def mock_coder_worker(item, wd_, backend_, **_kw):
+                sid = item.get("id")
+                deps = item.get("_dependency_outputs", [])
+                return {
+                    "sub_task_id": sid,
+                    "module_name": item.get("module_name", f"task_{sid}"),
+                    "files": [item.get("module_name", f"task_{sid}") + ".py"],
+                    "summary": f"Implemented {item.get('module_name')}",
+                    "dependency_verification": len(deps) > 0,
+                }
+
+            with patch.object(pfeature, "_feature_coder_worker",
+                            side_effect=mock_coder_worker) as mock_worker, \
+                 patch.object(frev.FeatureReviewerRole, "execute",
+                            return_value={"review_passed": True, "review_issues": []}), \
+                 patch.object(fwrt.FeatureReportWriterRole, "execute",
+                            return_value={"feature_report": os.path.join(wd, "report.md")}):
+
+                result = graph.invoke({
+                    "input_spec": "Add base and ext",
+                    "working_dir": wd,
+                    "backend": "deepseek",
+                    "project_dir": ".",
+                    "status": "initialized",
+                    "iteration": 0,
+                    "version": 1,
+                    "project_context": ctx,
+                    "implementation_plan": plan,
+                    "changed_files": [],
+                    "review_passed": False,
+                    "review_issues": [],
+                    "feature_report": "",
+                    "sub_tasks": plan["sub_tasks"],
+                    "coder_outputs": [],
+                    "dependency_graph": {},
+                })
+
+            # Verify coders ran twice (one per level agent call)
+            assert mock_worker.call_count >= 2
+
+            # Check coder outputs were collected
+            assert len(result.get("coder_outputs", [])) == 2
+            module_names = {o["module_name"] for o in result["coder_outputs"]}
+            assert module_names == {"base", "ext"}
+
+    def test_dependency_injection_to_level1_coders(self, tmpdir):
+        """Level[1] coders receive _dependency_outputs from level[0]."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {
+            "files_to_create": [], "files_to_modify": [], "test_files": [],
+            "sub_tasks": [
+                {"id": 1, "module_name": "base", "dependencies": [],
+                 "files_to_create": [{"path": "base.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+                {"id": 2, "module_name": "middle", "dependencies": [1],
+                 "files_to_create": [{"path": "mid.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+            ],
+        }
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        # Track what each coder received
+        received_items: list = []
+
+        def tracking_worker(item, wd_, backend_, **_kw):
+            received_items.append(dict(item))  # shallow copy
+            return {
+                "sub_task_id": item.get("id"),
+                "module_name": item.get("module_name", "?"),
+                "files": [item.get("module_name", "?") + ".py"],
+                "summary": "done",
+                "dependency_verification": bool(item.get("_dependency_outputs")),
+            }
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(pfeature, "_feature_coder_worker",
+                         side_effect=tracking_worker), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                         return_value={"review_passed": True, "review_issues": []}), \
+             patch.object(fwrt.FeatureReportWriterRole, "execute",
+                         return_value={"feature_report": os.path.join(wd, "report.md")}):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+
+            result = graph.invoke({
+                "input_spec": "Test deps",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": ctx,
+                "implementation_plan": plan,
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+                "sub_tasks": plan["sub_tasks"],
+                "coder_outputs": [],
+                "dependency_graph": {},
+            })
+
+        # Find the "middle" task — it should have _dependency_outputs
+        middle_items = [i for i in received_items if i.get("module_name") == "middle"]
+        assert len(middle_items) == 1
+        middle = middle_items[0]
+        assert "_dependency_outputs" in middle
+        assert len(middle["_dependency_outputs"]) >= 1
+        # The dependency should reference the "base" module
+        dep_modules = [d.get("module_name") for d in middle["_dependency_outputs"]]
+        assert "base" in dep_modules
+
+    def test_reviewer_receives_all_coder_outputs(self, tmpdir):
+        """The reviewer should receive all_coder_outputs for cross-coder verification."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.coder as fcode
+        import feature.reviewer as frev
+
+        wd = str(tmpdir)
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {
+            "files_to_create": [], "files_to_modify": [], "test_files": [],
+            "sub_tasks": [
+                {"id": 1, "module_name": "a", "dependencies": [],
+                 "files_to_create": [{"path": "a.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+                {"id": 2, "module_name": "b", "dependencies": [],
+                 "files_to_create": [{"path": "b.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+            ],
+        }
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        def mock_coder_worker(item, wd_, backend_, **_kw):
+            return {
+                "sub_task_id": item.get("id"),
+                "module_name": item.get("module_name", "?"),
+                "files": [item.get("module_name", "?") + ".py"],
+                "summary": "done",
+                "dependency_verification": None,
+            }
+
+        # Track what reviewer.execute receives
+        reviewer_call_kwargs: list = []
+
+        def tracking_reviewer_execute(self, **kwargs):
+            reviewer_call_kwargs.append(dict(kwargs))
+            return {"review_passed": True, "review_issues": []}
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(pfeature, "_feature_coder_worker",
+                         side_effect=mock_coder_worker), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                         side_effect=tracking_reviewer_execute, autospec=True):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+
+            result = graph.invoke({
+                "input_spec": "Test review",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": ctx,
+                "implementation_plan": plan,
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+                "sub_tasks": plan["sub_tasks"],
+                "coder_outputs": [],
+                "dependency_graph": {},
+            })
+
+        assert len(reviewer_call_kwargs) >= 1
+        rev_kwargs = reviewer_call_kwargs[0]
+        assert "all_coder_outputs" in rev_kwargs
+        coder_outputs = rev_kwargs["all_coder_outputs"]
+        assert len(coder_outputs) == 2
+        assert {o["module_name"] for o in coder_outputs} == {"a", "b"}
+
+    def test_reviewer_retry_loop_with_multi_coder(self, tmpdir):
+        """On REVIEW_FAILED, router sends back to coders node (multi-coder retry)."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.coder as fcode
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {
+            "files_to_create": [], "files_to_modify": [], "test_files": [],
+            "sub_tasks": [
+                {"id": 1, "module_name": "x", "dependencies": [],
+                 "files_to_create": [{"path": "x.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+            ],
+        }
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        def mock_coder_worker(item, wd_, backend_, **_kw):
+            return {
+                "sub_task_id": item.get("id"),
+                "module_name": item.get("module_name", "?"),
+                "files": [item.get("module_name", "?") + ".py"],
+                "summary": "done",
+                "dependency_verification": None,
+            }
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(pfeature, "_feature_coder_worker",
+                         side_effect=mock_coder_worker), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                         return_value={"review_passed": False, "review_issues": ["bug"]}), \
+             patch.object(fwrt.FeatureReportWriterRole, "execute",
+                         return_value={"feature_report": os.path.join(wd, "report.md")}):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+
+            result = graph.invoke({
+                "input_spec": "Test retry",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": ctx,
+                "implementation_plan": plan,
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+                "sub_tasks": plan["sub_tasks"],
+                "coder_outputs": [],
+                "dependency_graph": {},
+            })
+
+        # After max retries (3), pipeline proceeds to writer
+        assert result["status"] == "written"
+        assert result["version"] >= FeaturePipeline._MAX_CODER_RETRIES
+
+    def test_single_coder_fallback_when_no_sub_tasks(self, tmpdir):
+        """When sub_tasks is empty, coders_node falls back to single-coder mode."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.coder as fcode
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        # Plan WITHOUT sub_tasks — fallback path
+        plan = {
+            "files_to_create": [{"path": "x.py"}],
+            "files_to_modify": [], "test_files": [],
+        }
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(fcode.FeatureCoderRole, "execute",
+                         return_value={"changed_files": ["x.py"], "success": True}), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                         return_value={"review_passed": True, "review_issues": []}), \
+             patch.object(fwrt.FeatureReportWriterRole, "execute",
+                         return_value={"feature_report": os.path.join(wd, "report.md")}):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+
+            result = graph.invoke({
+                "input_spec": "Fallback test",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": ctx,
+                "implementation_plan": plan,
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+                "sub_tasks": [],
+                "coder_outputs": [],
+                "dependency_graph": {},
+            })
+
+        assert result["status"] == "written"
+        assert result["review_passed"] is True
+
+    def test_failed_level_blocks_downstream(self, tmpdir):
+        """When a coder in level[0] fails, dependent level[1] tasks are deferred."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {
+            "files_to_create": [], "files_to_modify": [], "test_files": [],
+            "sub_tasks": [
+                {"id": 1, "module_name": "base", "dependencies": [],
+                 "files_to_create": [{"path": "base.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+                {"id": 2, "module_name": "ext", "dependencies": [1],
+                 "files_to_create": [{"path": "ext.py", "description": ""}],
+                 "files_to_modify": [], "test_files": []},
+            ],
+        }
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        call_count = 0
+
+        def fail_base_then_succeed(item, wd_, backend_, **_kw):
+            nonlocal call_count
+            call_count += 1
+            sid = item.get("id")
+            # base (id=1) fails — no files produced
+            if sid == 1:
+                return {
+                    "sub_task_id": sid,
+                    "module_name": item.get("module_name", "?"),
+                    "files": [],  # FAILURE — no files
+                    "summary": "failed",
+                    "dependency_verification": None,
+                }
+            return {
+                "sub_task_id": sid,
+                "module_name": item.get("module_name", "?"),
+                "files": [item.get("module_name", "?") + ".py"],
+                "summary": "done",
+                "dependency_verification": None,
+            }
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(pfeature, "_feature_coder_worker",
+                         side_effect=fail_base_then_succeed), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                         return_value={"review_passed": True, "review_issues": []}), \
+             patch.object(fwrt.FeatureReportWriterRole, "execute",
+                         return_value={"feature_report": os.path.join(wd, "report.md")}):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+
+            result = graph.invoke({
+                "input_spec": "Test failure",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": ctx,
+                "implementation_plan": plan,
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+                "sub_tasks": plan["sub_tasks"],
+                "coder_outputs": [],
+                "dependency_graph": {},
+            })
+
+        # base ran (1 call), ext deferred (not called) — so only 1 call
+        assert call_count == 1
+
+    def test_cross_coder_issues_in_reviewer_parse_result(self):
+        """parse_result extracts CROSS_CODER_ISSUE and INTEGRATION_ISSUE tokens."""
+        role = FeatureReviewerRole()
+        mock = _make_agent_result([
+            {"content": "REVIEW_FAILED\n"
+                        "- missing import\n"
+                        "CROSS_CODER_ISSUE: ext: imports from base fail\n"
+                        "INTEGRATION_ISSUE: data flow broken between modules\n"
+                        "More text",
+             "type": "AIMessage"},
+        ])
+        result = role.parse_result(mock)
+        assert result["review_passed"] is False
+        assert len(result["cross_coder_issues"]) == 2
+        # First issue has module name
+        assert result["cross_coder_issues"][0]["module"] == "ext"
+        assert "imports from base" in result["cross_coder_issues"][0]["description"]
+        # Second issue has no module name
+        assert result["cross_coder_issues"][1]["module"] is None
+        assert "data flow" in result["cross_coder_issues"][1]["description"]
+
+    def test_cross_coder_issues_empty_when_passed(self):
+        """No cross_coder_issues when REVIEW_PASSED."""
+        role = FeatureReviewerRole()
+        mock = _make_agent_result([
+            {"content": "All good. REVIEW_PASSED", "type": "AIMessage"},
+        ])
+        result = role.parse_result(mock)
+        assert result["review_passed"] is True
+        assert result["cross_coder_issues"] == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -485,6 +1274,110 @@ class TestFeaturePipeline:
 # ═══════════════════════════════════════════════════════════════════════════
 # FeaturePipeline import from main
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestFeaturePipelineVersioning:
+    def test_initial_state_has_version_1(self):
+        p = FeaturePipeline(working_dir="/tmp/test", backend="deepseek")
+        state = p._build_initial_state("Add X", [])
+        assert state["version"] == 1
+
+    def test_version_bumps_across_coder_reviewer_loop(self, tmpdir):
+        """Version increments on each review failure, circuit breaker at _MAX_CODER_RETRIES."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.coder as fcode
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        # Pre-create context + plan files so roles don't fallback
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {"files_to_create": [{"path": "x.py"}], "files_to_modify": [], "test_files": []}
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(fcode.FeatureCoderRole, "execute",
+                          return_value={"changed_files": ["x.py"], "success": True}), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                          return_value={"review_passed": False, "review_issues": ["bug"]}), \
+             patch.object(fwrt.FeatureReportWriterRole, "execute",
+                          return_value={"feature_report": os.path.join(wd, "feature_report.md")}):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+            result = graph.invoke({
+                "input_spec": "Add X",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": {},
+                "implementation_plan": {},
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+            })
+
+        # After all retries exhausted (v1→v2→v3→v4 > _MAX_CODER_RETRIES=3),
+        # pipeline should reach writer with version bumped past max
+        assert result["status"] == "written"
+        assert result["version"] >= FeaturePipeline._MAX_CODER_RETRIES
+        assert "feature_report" in result
+
+    def test_pipeline_passes_on_first_review(self, tmpdir):
+        """Version stays at 1 when review passes on first attempt."""
+        import feature.scanner as fscan
+        import feature.planner as fplan
+        import feature.coder as fcode
+        import feature.reviewer as frev
+        import feature.writer as fwrt
+
+        wd = str(tmpdir)
+        ctx = {"language": "python", "conventions": {}, "file_manifest": []}
+        with open(os.path.join(wd, "project_context.json"), "w") as f:
+            json.dump(ctx, f)
+        plan = {"files_to_create": [{"path": "x.py"}], "files_to_modify": [], "test_files": []}
+        with open(os.path.join(wd, "implementation_plan.json"), "w") as f:
+            json.dump(plan, f)
+
+        with patch.object(fscan.FeatureScannerRole, "execute", return_value=ctx), \
+             patch.object(fplan.FeaturePlannerRole, "execute", return_value=plan), \
+             patch.object(fcode.FeatureCoderRole, "execute",
+                          return_value={"changed_files": ["x.py"], "success": True}), \
+             patch.object(frev.FeatureReviewerRole, "execute",
+                          return_value={"review_passed": True, "review_issues": []}), \
+             patch.object(fwrt.FeatureReportWriterRole, "execute",
+                          return_value={"feature_report": os.path.join(wd, "feature_report.md")}):
+
+            p = FeaturePipeline(working_dir=wd, backend="deepseek")
+            graph = p._build_graph()
+            result = graph.invoke({
+                "input_spec": "Add X",
+                "working_dir": wd,
+                "backend": "deepseek",
+                "project_dir": ".",
+                "status": "initialized",
+                "iteration": 0,
+                "version": 1,
+                "project_context": {},
+                "implementation_plan": {},
+                "changed_files": [],
+                "review_passed": False,
+                "review_issues": [],
+                "feature_report": "",
+            })
+
+        assert result["review_passed"] is True
+        assert result["version"] == 1  # never bumped
+        assert result["status"] == "written"
+
 
 class TestFeaturePipelineImport:
     def test_import_from_feature_pipeline(self):

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pipeline import (CoderPipeline, ResearchPipeline, CoderPPPipeline,
                        TopologyPipeline, SkillPipeline, FeaturePipeline,
-                       SelfEvolutionPipeline)
+                       SelfEvolutionPipeline, PlanPipeline)
 from tools import ToolRegistry
 
 PIPELINES = {
@@ -16,6 +16,7 @@ PIPELINES = {
     "skill": SkillPipeline,
     "feature": FeaturePipeline,
     "self_evolution": SelfEvolutionPipeline,
+    "plan": PlanPipeline,
 }
 
 
@@ -87,10 +88,10 @@ def main():
     if not requirement:
         # For skill/topology/feature/self_evolution modes, --target makes the text
         # requirement optional.
-        if args.target and args.mode in ("skill", "topology", "feature", "self_evolution"):
+        if args.target and args.mode in ("skill", "topology", "feature", "self_evolution", "plan"):
             requirement = args.target
         elif sys.stdin.isatty():
-            prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement", "feature": "Enter feature description", "self_evolution": "Enter self-evolution goal"}
+            prompt_map = {"research": "Enter research topic", "coderpp": "Enter coding requirement", "coder": "Enter requirement", "feature": "Enter feature description", "self_evolution": "Enter self-evolution goal", "plan": "Enter planning task description"}
             requirement = input(f"{prompt_map.get(args.mode, 'Enter requirement')}: ").strip()
         else:
             requirement = sys.stdin.read().strip()

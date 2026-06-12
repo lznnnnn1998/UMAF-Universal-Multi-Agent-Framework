@@ -427,8 +427,12 @@ class TestResearchPipeline:
 
     def test_decompose_returns_list(self, tmpdir):
         p = ResearchPipeline(working_dir=tmpdir, backend="deepseek")
-        result = p._decompose("AI and ML")
+        with patch("pipeline.research.decompose_topic",
+                   return_value=[{"id": 1, "title": "Intro",
+                                  "description": "test", "dependencies": []}]):
+            result = p._decompose("AI and ML")
         assert isinstance(result, list)
+        assert len(result) == 1
 
     def test_build_graph_compiles(self):
         p = ResearchPipeline(working_dir="/tmp/test")

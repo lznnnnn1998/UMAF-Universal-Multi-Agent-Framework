@@ -202,7 +202,7 @@ class SkillPipeline(BasePipeline):
                 except Exception as exc:
                     print(f"  [aggregator] Agent error: {exc}")
 
-            if not inventory or not inventory.get("skills"):
+            if not inventory or not (inventory.get("tools") or inventory.get("inferred_skills") or inventory.get("skills")):
                 print("  [aggregator] Falling back to rule-based aggregation...")
                 inventory = SkillAggregatorRole._fallback_aggregator(project_dir=project_dir, working_dir=working_dir)
                 inv_path = os.path.join(working_dir, "skill_inventory.json")

@@ -141,6 +141,7 @@ class TopologyAnalyzerRole(AgentRole):
         word_count = len(input_spec.split())
         scale = "high" if word_count > 100 else ("medium" if word_count > 30 else "low")
         return {
+            "_fallback": True,
             "input_spec": input_spec[:200],
             "factors": {
                 "data_dependencies": {

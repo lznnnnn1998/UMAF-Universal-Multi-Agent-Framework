@@ -53,16 +53,42 @@ class TopologyDesignerRole(AgentRole):
 
     def build_task(self, backend: str, complexity_factors: dict[str, Any] | None = None,
                    input_spec: str = "", working_dir: str = ".",
+                   evaluation_feedback: str = "",
                    **context: Any) -> str:
-        """Build the topology design prompt with backend-aware instructions."""
+        """Build the topology design prompt with backend-aware instructions.
+
+        Args:
+            backend: LLM backend name (deepseek or claude_cli).
+            complexity_factors: Analysis results from TopologyAnalyzerRole.
+            input_spec: Original task/requirement description.
+            working_dir: Working directory for file I/O.
+            evaluation_feedback: Previous evaluation feedback (non-empty on retry).
+
+        Returns:
+            Prompt string for the LLM.
+        """
         factors_text = self._format_factors(complexity_factors)
+
+        # Build evaluation feedback section for retry iterations
+        feedback_section = ""
+        if evaluation_feedback:
+            feedback_section = (
+                f"\n## Previous Evaluation Feedback\n"
+                f"The evaluator returned the following feedback on the previous "
+                f"set of topologies. Use this feedback to propose improved "
+                f"topologies that address the identified weaknesses:\n\n"
+                f"**{evaluation_feedback}**\n\n"
+                f"Focus on improving the low-scoring dimensions by adjusting "
+                f"agent configurations, connections, or parallelism strategies.\n"
+            )
 
         common = (
             f"You are a topology design expert. Your job is to propose "
             f"candidate agent topologies based on a complexity analysis of "
             f"the target system.\n\n"
             f"## Requirement\n{input_spec}\n\n"
-            f"## Complexity Analysis\n{factors_text}\n\n"
+            f"## Complexity Analysis\n{factors_text}\n"
+            f"{feedback_section}"
             f"## Task\n"
             f"Propose 2-4 candidate topologies. Each topology should follow "
             f"one of the four design patterns below. Every topology must be "
@@ -133,8 +159,22 @@ class TopologyDesignerRole(AgentRole):
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      complexity_factors: dict[str, Any] | None = None,
-                     input_spec: str = "", **context: Any) -> list[dict[str, Any]]:
-        """Extract candidate topologies from agent response or disk file."""
+                     input_spec: str = "",
+                     evaluation_feedback: str = "",
+                     **context: Any) -> list[dict[str, Any]]:
+        """Extract candidate topologies from agent response or disk file.
+
+        Args:
+            result: AgentResult from the agent execution.
+            working_dir: Working directory for disk fallback.
+            complexity_factors: Analysis results from TopologyAnalyzerRole.
+            input_spec: Original task/requirement description.
+            evaluation_feedback: Previous evaluation feedback (non-empty on retry).
+                Passed through — build_task consumes this for prompt generation.
+
+        Returns:
+            List of candidate topology dicts.
+        """
         topologies: list[dict[str, Any]] = []
 
         # 1. Try extracting JSON array from agent response messages
@@ -207,9 +247,14 @@ class TopologyDesignerRole(AgentRole):
         complexity_factors: dict[str, Any],
         input_spec: str,
     ) -> list[dict[str, Any]]:
-        """Build conservative default topologies when extraction fails."""
+        """Build conservative default topologies when extraction fails.
+
+        Returns 4 topologies covering all design patterns: sequential,
+        fan_out_fan_in, debate_consensus, and hierarchical.
+        """
         return [
             {
+                "_fallback": True,
                 "name": "Sequential Pipeline",
                 "pattern": "sequential",
                 "description": (
@@ -241,6 +286,7 @@ class TopologyDesignerRole(AgentRole):
                 ],
             },
             {
+                "_fallback": True,
                 "name": "Fan-Out/Fan-In Pipeline",
                 "pattern": "fan_out_fan_in",
                 "description": (
@@ -276,6 +322,44 @@ class TopologyDesignerRole(AgentRole):
                 ],
             },
             {
+                "_fallback": True,
+                "name": "Debate Consensus",
+                "pattern": "debate_consensus",
+                "description": (
+                    "Multiple agents independently analyze the same problem, "
+                    "then a judge selects or synthesizes the best answer. Best "
+                    "for high-stakes decisions where correctness matters more "
+                    "than speed."
+                ),
+                "agents": [
+                    {"agent_name": "debater_a", "role_type": "independent analyst A",
+                     "tools": ["read_file", "write_file"], "max_steps": 10},
+                    {"agent_name": "debater_b", "role_type": "independent analyst B",
+                     "tools": ["read_file", "write_file"], "max_steps": 10},
+                    {"agent_name": "debater_c", "role_type": "independent analyst C",
+                     "tools": ["read_file", "write_file"], "max_steps": 10},
+                    {"agent_name": "judge", "role_type": "selects/synthesizes best answer",
+                     "tools": ["read_file", "write_file"], "max_steps": 10},
+                ],
+                "connections": [
+                    {"from": "debater_a", "to": "judge"},
+                    {"from": "debater_b", "to": "judge"},
+                    {"from": "debater_c", "to": "judge"},
+                ],
+                "parallelism_strategy": "all debaters run in parallel; judge runs after all debaters complete",
+                "strengths": [
+                    "Highest fault tolerance via redundant analysis",
+                    "Different perspectives catch edge cases",
+                    "Judge can select or synthesize best parts of each analysis",
+                ],
+                "weaknesses": [
+                    "Redundant execution costs 3x more tokens",
+                    "Higher total latency if debaters are sequential",
+                    "Consensus logic adds complexity to synthesis",
+                ],
+            },
+            {
+                "_fallback": True,
                 "name": "Hierarchical Orchestrator",
                 "pattern": "hierarchical",
                 "description": (

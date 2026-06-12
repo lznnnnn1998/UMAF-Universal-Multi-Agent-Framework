@@ -482,21 +482,34 @@ class TestCoderPPPipeline:
         with open(tex_path, "w") as f:
             f.write(r"\documentclass{article}\section{Intro}hello\section{Methods}")
         p = CoderPPPipeline(working_dir=tmpdir, backend="deepseek")
-        result = p._decompose(tex_path)
+        # Mock decompose_to_modules to avoid real LLM call
+        with patch("pipeline.coderpp.decompose_to_modules",
+                   return_value=[{"id": 1, "module_name": "core",
+                                  "description": "test", "files_to_create": []}]):
+            result = p._decompose(tex_path)
         assert isinstance(result, list)
+        assert len(result) == 1
 
     def test_decompose_reads_md_file(self, tmpdir):
         md_path = os.path.join(tmpdir, "spec.md")
         with open(md_path, "w") as f:
             f.write("# Specification\nImplement this pipeline.")
         p = CoderPPPipeline(working_dir=tmpdir, backend="deepseek")
-        result = p._decompose(md_path)
+        with patch("pipeline.coderpp.decompose_to_modules",
+                   return_value=[{"id": 1, "module_name": "api",
+                                  "description": "test", "files_to_create": []}]):
+            result = p._decompose(md_path)
         assert isinstance(result, list)
+        assert len(result) == 1
 
     def test_decompose_direct_text(self):
         p = CoderPPPipeline(working_dir="/tmp/test", backend="deepseek")
-        result = p._decompose("Build a web server")
+        with patch("pipeline.coderpp.decompose_to_modules",
+                   return_value=[{"id": 1, "module_name": "server",
+                                  "description": "test", "files_to_create": []}]):
+            result = p._decompose("Build a web server")
         assert isinstance(result, list)
+        assert len(result) == 1
 
     def test_display_decomposition_with_deps(self, capsys):
         p = CoderPPPipeline(working_dir="/tmp/test")
@@ -515,7 +528,10 @@ class TestCoderPPPipeline:
     def test_decompose_non_existent_md_file(self, tmpdir):
         """Decompose handles non-existent file paths gracefully (by passing as text)."""
         p = CoderPPPipeline(working_dir=tmpdir, backend="deepseek")
-        result = p._decompose(os.path.join(tmpdir, "nonexistent.md"))
+        with patch("pipeline.coderpp.decompose_to_modules",
+                   return_value=[{"id": 1, "module_name": "mod",
+                                  "description": "test", "files_to_create": []}]):
+            result = p._decompose(os.path.join(tmpdir, "nonexistent.md"))
         assert isinstance(result, list)
 
     def test_manage_output_dir(self, tmpdir):

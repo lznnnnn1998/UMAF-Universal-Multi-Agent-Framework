@@ -178,9 +178,10 @@ class TestCoderPipelineNodes:
 
     def test_reviewer_node_detects_review_passed(self, tmpdir):
         """When reviewer returns REVIEW_PASSED, the graph terminates with review_passed=True."""
-        from pipeline.coder import ReviewerRole
+        from pipeline.coder import CoderRole, ReviewerRole
         result_mock = self._make_mock_messages("All checks pass. REVIEW_PASSED")
-        with patch.object(ReviewerRole, "execute", return_value=result_mock):
+        with patch.object(CoderRole, "execute", return_value=self._make_mock_messages("TASK_COMPLETE")), \
+             patch.object(ReviewerRole, "execute", return_value=result_mock):
             p = CoderPipeline(working_dir=tmpdir, backend="deepseek", yes=True)
             graph = p._build_graph()
 
@@ -214,7 +215,7 @@ class TestCoderPipelineNodes:
 
     def test_reviewer_reverse_scan_uses_last_verdict(self, tmpdir):
         """When multiple AIMessages have verdicts, the most recent (last) wins."""
-        from pipeline.coder import ReviewerRole
+        from pipeline.coder import CoderRole, ReviewerRole
 
         msg1 = MagicMock()
         msg1.content = "Let me check... REVIEW_FAILED might be needed."
@@ -227,7 +228,8 @@ class TestCoderPipelineNodes:
         result_mock.messages = [msg1, msg2]
         result_mock.success = True
 
-        with patch.object(ReviewerRole, "execute", return_value=result_mock):
+        with patch.object(CoderRole, "execute", return_value=self._make_mock_messages("TASK_COMPLETE")), \
+             patch.object(ReviewerRole, "execute", return_value=result_mock):
             p = CoderPipeline(working_dir=tmpdir, backend="deepseek", yes=True)
             graph = p._build_graph()
 

@@ -420,12 +420,14 @@ class TestSelfEvolutionGraphNodes:
             ],
         }
         plan = {"improvements": [], "estimated_impact": "Better"}
+        writer_report = {"evolution_report": os.path.join(tmpdir, "evolution_report.md")}
 
         with patch.object(SelfEvolutionAnalyzerRole, "execute", return_value=analysis), \
              patch.object(SelfEvolutionPlannerRole, "execute", return_value=plan), \
              patch.object(SelfEvolutionCoderRole, "execute", return_value={"changed_files": [], "success": True}), \
              patch.object(SelfEvolutionReviewerRole, "execute",
-                          return_value={"review_passed": True, "review_issues": []}):
+                          return_value={"review_passed": True, "review_issues": []}), \
+             patch.object(SelfEvolutionWriterRole, "execute", return_value=writer_report):
             p = SelfEvolutionPipeline(working_dir=tmpdir, backend="deepseek", yes=True)
             graph = p._build_graph()
 

@@ -9,16 +9,19 @@ metadata:
 
 ## Verified Metrics by Version
 
-| Metric | v1.0 | v1.1 | v1.2 | v1.3 | v1.3.1 | v1.4 | v1.4.1 | v1.5 | v1.6 |
-|--------|------|------|------|------|--------|------|--------|------|------|
-| Worker completion | 3/7 (43%) | 5/5 (100%) | 4/6 (67%) | — | 4/4 (100%) | 7/7 (100%) | — | — | — |
-| Top score | 25/50 | 46/50 | 43/50 | — | 47/50 | 48/50 | — | — | — |
-| Pipeline time | 35min | 9min | 35min | — | 12min | 7.4min | — | — | — |
-| LaTeX output | 3.6KB | 40KB | 41KB | — | generated | 60KB | — | — | — |
-| Skills detected | — | — | — | — | — | — | — | 33 (11 categories) | 21 (claude_cli) |
-| Unit/smoke tests | 0 | 0 | 0 | 8/8 | 8/8 | 8/8 | 15/15 | 42/42 | 97/97 | 99/99 | **379/379** |
-| Python | 3.9 | 3.9 | 3.9 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 |
-| Pipelines | 2 | 2 | 2 | 2 | 2 | 3 | 3 | 5 | 6 | 6 | **7** |
+| Metric | v1.0 | v1.1 | v1.2 | v1.3 | v1.3.1 | v1.4 | v1.4.1 | v1.5 | v1.6 | v1.7 | v1.8 | v1.9 | **v2.0** |
+|--------|------|------|------|------|--------|------|--------|------|------|------|------|------|------|
+| Worker completion | 3/7 | 5/5 | 4/6 | — | 4/4 | 7/7 | — | — | — | — | — | — | — |
+| Top score | 25/50 | 46/50 | 43/50 | — | 47/50 | 48/50 | — | — | — | — | — | — | — |
+| Pipeline time | 35min | 9min | 35min | — | 12min | 7.4min | — | — | — | — | — | — |
+| LaTeX output | 3.6KB | 40KB | 41KB | — | gen'd | 60KB | — | — | — | — | — | — |
+| Skills detected | — | — | — | — | — | — | — | 33 | 21 | — | — | — |
+| Unit/smoke tests | 0 | 0 | 0 | 8/8 | 8/8 | 8/8 | 15/15 | 42/42 | 97/97 | 99/99 | 379/379 | 403/403 | **480/480** |
+| Test time | — | — | — | — | — | — | — | — | — | — | ~7s | 3.72s | **7.91s** |
+| Python | 3.9 | 3.9 | 3.9 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 | 3.11 |
+| Pipelines | 2 | 2 | 2 | 2 | 2 | 3 | 3 | 5 | 6 | 6 | 7 | 8 | 8 |
+| AgentRoles | — | — | — | — | — | 14 | 14 | 18 | 23 | 23 | 32 | 39 | 39 |
+| Tools | 5 | 5 | 5 | 6 | 7 | 7 | 7 | 7 | 7 | 8 | 8 | 8 | 8 |
 
 ## Critical Bugs Fixed (Across All Versions)
 
@@ -39,6 +42,27 @@ metadata:
 - **Explicit `working_dir`**: No global state. Every tool, subprocess, and file operation is sandboxed.
 - **OOP 5-layer hierarchy** (v1.4): `AgentRole` ABC + `ToolRegistry` centralization eliminates duplicated tool definitions across 16+ roles.
 - **Meta-programming with CoderPP** (v1.5): Topology Optimizer + Skill Summarizer both built by CoderPP from `.md` specs. Validated: the topology it designed (fan-out/fan-in with domain-specific detectors) was the right architecture.
+
+## New in v2.0
+
+### Feature Pipeline v2 — Multi-Coder Parallelism
+- Planner decomposes features into `sub_tasks` with dependency graph
+- Coders execute in topological levels: level[i] receives and verifies level[i-1] outputs
+- `_run_parallel_agents()` within each level; `_feature_coder_worker()` entry point
+- Cross-coder integration review: 5 dimensions (dependency consumption, import resolution, interface matching, data flow, integration tests)
+- DEPENDENCY_VERIFIED / DEPENDENCY_ISSUE: token scanning
+- Fallback to single-coder when no sub_tasks
+- **Verified**: 6 coders, 4 topological levels, all deps verified, REVIEW_PASSED in 1 iteration
+
+### Skill Pipeline v2 — Evidence-Based Assessment
+- `_assess_proficiency()`: depth (signal specificity) × consistency (cross-file distribution) × integration (co-occurrence) − negative penalty
+- `evidence_refs` on every detected skill with specific file paths
+- 19 domains (up from 9): Computer Vision, RL, Networking, OS, Embedded, etc.
+- 25+ modern tools: uv, ruff, biome, Playwright, Vitest, TailwindCSS, etc.
+- `_infer_category()` replaces hardcoded `_SKILL_CATEGORY_MAP`
+- `skill_graph` with cross-referenced skills and confidence boost
+- Artifact-type-aware report structure with Skill Gap Analysis
+- Scanner: file complexity scoring, generated file detection, 4000-char samples, `key_files`
 
 ## New in v1.5
 
@@ -130,6 +154,44 @@ metadata:
 - 379/379 tests pass
 - 7 pipelines, 32 concrete AgentRole subclasses, 8 tools, 23 ToolRegistry role methods
 - Removed redundant files: `_run_*.py` temporary test runners, `_test_hang.py`, `review_verdict.txt`, `tools/self_evolution_tools.py`
+
+### Related
+[[version_diffs]], [[architecture_progress]], [[oop_refactoring]]
+
+## New in v1.9
+
+### Plan Pipeline (8th pipeline)
+- 6-node fan-out/fan-in: scanner → decomposer → 4 parallel analyzers → writer
+- 7 AgentRoles in `plan/`: `PlanScannerRole`, `PlanDecomposerRole`, `PlanDependencyAnalyzerRole`, `PlanRiskAssessorRole`, `PlanResourceEstimatorRole`, `PlanCrossCuttingAnalyzerRole`, `PlanWriterRole`
+- Transforms natural language task descriptions into structured implementation plans
+- Guard clauses for resume/testability
+
+### AgentRole Built-in Retry
+- `_MAX_RETRIES = 3` in `AgentRole` base class with auto version-bump loop
+- Every agent gets retry resilience without pipeline-level code
+- Each attempt produces separate checkpoint + log file; prior context loaded via `load_previous()`
+
+### TopologyPipeline Retry Loop
+- Designer↔evaluator feedback loop: if best_score < 35/50, routes back with dimensional feedback
+- `_MAX_RETRIES = 3`, `_SCORE_THRESHOLD = 35`
+- New `iteration` and `evaluation_feedback` fields in `TopologyState`
+
+### FeaturePipeline Version-Aware Retry
+- Upgraded from `iteration` counter to version-bump pattern matching CoderPP
+- `_MAX_VERSIONS = 5`, `version` field in `FeatureState`
+- `project_dir` passthrough to coder/reviewer nodes
+
+### Test Optimization
+- test_feature_v2.py deleted (55 duplicate tests)
+- `-n auto --timeout=30` in pyproject.toml — parallel by default
+- Fixed 8 missing mocks: tests no longer call real LLMs
+- 403/403 tests pass in 3.72s (down from 458/458 in ~7s)
+
+### Architecture Decisions
+- **Built-in agent retry** (v1.9): `AgentRole._MAX_RETRIES=3` — every agent gets version-bump retry with checkpoint context reuse for free. Pipelines no longer need their own retry logic for basic agent failures.
+- **Topology designer↔evaluator retry** (v1.9): Quality feedback loop. Evaluator identifies low dimensions, designer improves, re-evaluates. Threshold 35/50, max 3 retries.
+- **Feature version-aware retry** (v1.9): Matches CoderPP's pattern. Each failed review bumps version → new checkpoint preserves prior context. `_MAX_VERSIONS=5`.
+- **Plan Pipeline** (v1.9): 8th pipeline. 6-node fan-out/fan-in with 4 parallel analyzers. Guard clauses for resume/testability.
 
 ### Related
 [[version_diffs]], [[architecture_progress]], [[oop_refactoring]]

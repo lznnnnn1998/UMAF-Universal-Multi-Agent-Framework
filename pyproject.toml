@@ -3,4 +3,5 @@ testpaths = ["test"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--tb=short"
+pythonpath = ["."]
+addopts = "-n auto --timeout=30 --tb=short"

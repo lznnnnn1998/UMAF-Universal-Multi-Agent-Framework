@@ -210,6 +210,34 @@ class ToolRegistry:
         return cls._apply_override("self_evolution", "writer", [])
 
     @classmethod
+    def plan_scanner_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "scanner", [])
+
+    @classmethod
+    def plan_decomposer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "decomposer", [])
+
+    @classmethod
+    def plan_dependency_analyzer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "dependency_analyzer", [])
+
+    @classmethod
+    def plan_risk_assessor_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "risk_assessor", [])
+
+    @classmethod
+    def plan_resource_estimator_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "resource_estimator", [])
+
+    @classmethod
+    def plan_cross_cutting_analyzer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "cross_cutting_analyzer", [])
+
+    @classmethod
+    def plan_writer_tools(cls) -> list[ToolSpec]:
+        return cls._apply_override("plan", "writer", [])
+
+    @classmethod
     def to_dicts(cls, specs: list[ToolSpec]) -> list[dict[str, Any]]:
         return [{"name": s.name, "description": s.description, "parameters": dict(s.parameters)} for s in specs]
 

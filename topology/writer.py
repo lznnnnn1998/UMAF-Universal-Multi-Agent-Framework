@@ -6,6 +6,7 @@ from typing import Any
 
 from agent import AgentResult, AgentRole
 from tools import ToolRegistry
+from utils import extract_json_object
 
 
 class TopologyWriterRole(AgentRole):
@@ -120,8 +121,24 @@ class TopologyWriterRole(AgentRole):
 
         spec_data: dict[str, Any] = {}
 
-        # If spec doesn't exist, generate a fallback
+        # If spec doesn't exist on disk, try extracting JSON from agent messages
         if not spec_exists:
+            for msg in reversed(result.messages):
+                content = msg.content if hasattr(msg, "content") else str(msg)
+                json_str = extract_json_object(content)
+                if json_str:
+                    try:
+                        parsed = json.loads(json_str)
+                        if isinstance(parsed, dict) and (
+                            "recommended_topology" in parsed or "pipeline_name" in parsed
+                        ):
+                            spec_data = parsed
+                            break
+                    except json.JSONDecodeError:
+                        continue
+
+        # If still no spec data, generate a fallback
+        if not spec_data and not spec_exists:
             spec_data = self._generate_spec(
                 evaluated_topologies or [],
                 candidate_topologies or [],
@@ -133,12 +150,20 @@ class TopologyWriterRole(AgentRole):
                 spec_exists = True
             except OSError:
                 pass
-        else:
+        elif not spec_data and spec_exists:
             try:
                 with open(spec_path) as f:
                     spec_data = json.load(f)
             except (json.JSONDecodeError, OSError):
                 spec_data = {}
+        elif spec_data and not spec_exists:
+            # Extracted from messages but not on disk — write it
+            try:
+                with open(spec_path, "w") as f:
+                    json.dump(spec_data, f, indent=2)
+                spec_exists = True
+            except OSError:
+                pass
 
         # If report doesn't exist, generate a fallback
         if not report_exists:
@@ -192,6 +217,7 @@ class TopologyWriterRole(AgentRole):
         """Generate a topology_spec.json from evaluated data."""
         if not evaluated and not candidates:
             return {
+                "_fallback": True,
                 "pipeline_name": "topology",
                 "recommended_topology": "Unknown",
                 "total_score": 0,
@@ -243,6 +269,7 @@ class TopologyWriterRole(AgentRole):
         flow = TopologyWriterRole._build_flow_diagram(pattern, agents, connections)
 
         return {
+            "_fallback": True,
             "pipeline_name": "topology",
             "recommended_topology": best_name,
             "total_score": best.get("total_score", 0),

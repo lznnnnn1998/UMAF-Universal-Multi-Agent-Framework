@@ -38,9 +38,21 @@ class TopologyEvaluatorRole(AgentRole):
     # ── Task prompt ─────────────────────────────────────────────────────
 
     def build_task(self, backend: str, candidate_topologies: list[dict[str, Any]] | None = None,
+                   complexity_factors: dict[str, Any] | None = None,
                    working_dir: str = ".", **context: Any) -> str:
-        """Build the evaluation prompt with backend-aware instructions."""
+        """Build the evaluation prompt with backend-aware instructions.
+
+        Args:
+            backend: LLM backend name (deepseek or claude_cli).
+            candidate_topologies: Topologies from the designer to evaluate.
+            complexity_factors: Analysis results from TopologyAnalyzerRole.
+            working_dir: Working directory for file I/O.
+
+        Returns:
+            Prompt string for the LLM.
+        """
         topo_text = self._format_topologies(candidate_topologies)
+        complexity_text = self._format_complexity_for_eval(complexity_factors)
 
         dims = "\n".join(
             f"  {i+1}. **{d}** — {self._dimension_guide(d)}"
@@ -52,6 +64,7 @@ class TopologyEvaluatorRole(AgentRole):
             f"candidate agent topologies on 5 key dimensions and produce a "
             f"ranked evaluation.\n\n"
             f"## Candidate Topologies\n{topo_text}\n\n"
+            f"## Task Complexity Context\n{complexity_text}\n\n"
             f"## Evaluation Dimensions (each scored 1-10)\n{dims}\n\n"
             f"## Instructions\n"
             f"For each topology, assign a score (1-10) for each dimension "
@@ -59,15 +72,18 @@ class TopologyEvaluatorRole(AgentRole):
             f"(sum of all 5 dimensions, max 50).\n\n"
             f"### Scoring Guidelines\n"
             f"- **latency**: Lower end-to-end time = higher score. Consider "
-            f"parallelism and critical path length.\n"
+            f"parallelism and critical path length. If the task has high "
+            f"latency sensitivity, parallel patterns should score higher.\n"
             f"- **reliability**: Fault tolerance, retry ability, error isolation. "
-            f"More redundancy = higher score.\n"
+            f"More redundancy = higher score. If the task has high data "
+            f"dependencies, sequential reliability should be weighted higher.\n"
             f"- **cost_efficiency**: Fewer agent calls and tokens = higher score. "
             f"Consider API cost per run.\n"
             f"- **simplicity**: Easier to implement and maintain = higher score. "
             f"Prefer clear data flow.\n"
             f"- **scalability**: Ability to handle growing task size or sub-task count. "
-            f"More parallelism headroom = higher score.\n\n"
+            f"More parallelism headroom = higher score. If the task is high-scale, "
+            f"scalable patterns should score higher.\n\n"
             f"## Output Format\n"
             f'Write your evaluation as a JSON array to '
             f'"evaluated_topologies.json":\n'
@@ -111,8 +127,20 @@ class TopologyEvaluatorRole(AgentRole):
 
     def parse_result(self, result: AgentResult, working_dir: str,
                      candidate_topologies: list[dict[str, Any]] | None = None,
+                     complexity_factors: dict[str, Any] | None = None,
                      **context: Any) -> list[dict[str, Any]]:
-        """Extract evaluated topologies from agent response or disk file."""
+        """Extract evaluated topologies from agent response or disk file.
+
+        Args:
+            result: AgentResult from the agent execution.
+            working_dir: Working directory for disk fallback.
+            candidate_topologies: Original topologies (used for fallback).
+            complexity_factors: Analysis results from TopologyAnalyzerRole
+                (passed to fallback for complexity-aware scoring).
+
+        Returns:
+            List of evaluated topology dicts, sorted by total_score desc.
+        """
         evaluated: list[dict[str, Any]] = []
 
         # 1. Try extracting JSON array from agent response messages
@@ -142,7 +170,10 @@ class TopologyEvaluatorRole(AgentRole):
 
         # 3. Fallback: score topologies with a heuristic
         if not evaluated:
-            evaluated = self._fallback_evaluate(candidate_topologies or [])
+            evaluated = self._fallback_evaluate(
+                candidate_topologies or [],
+                complexity_factors,
+            )
 
         # Sort by total_score descending
         evaluated.sort(key=lambda t: t.get("total_score", 0), reverse=True)
@@ -200,8 +231,35 @@ class TopologyEvaluatorRole(AgentRole):
         return "\n".join(lines)
 
     @staticmethod
+    def _format_complexity_for_eval(factors: dict[str, Any] | None) -> str:
+        """Format complexity factors for inclusion in the evaluation prompt."""
+        if not factors:
+            return "(No complexity analysis available — evaluate topologies in isolation.)"
+
+        f = factors.get("factors", factors)
+        overall = factors.get("overall_complexity", "unknown")
+
+        lines = [f"Overall complexity: **{str(overall).upper()}**"]
+        factor_names = [
+            "data_dependencies",
+            "parallelism_opportunities",
+            "tool_requirements",
+            "error_domains",
+            "latency_sensitivity",
+            "scale",
+        ]
+        for name in factor_names:
+            entry = f.get(name, {})
+            if isinstance(entry, dict):
+                level = entry.get("level", "unknown")
+                reasoning = entry.get("reasoning", "")
+                lines.append(f"  - {name}: {level.upper()} — {reasoning}")
+        return "\n".join(lines)
+
+    @staticmethod
     def _fallback_evaluate(
         topologies: list[dict[str, Any]],
+        complexity_factors: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Heuristic-based evaluation when LLM extraction fails.
 
@@ -210,7 +268,27 @@ class TopologyEvaluatorRole(AgentRole):
         - Fan-out: high latency/scalability, lower simplicity
         - Hierarchical: high scalability, lower cost/simplicity
         - Debate: high reliability, lower cost/latency
+
+        Complexity factors adjust the base heuristic scores:
+        - High parallelism_opportunities → boost fan_out latency
+        - High data_dependencies → boost sequential reliability
+        - High latency_sensitivity → reduce sequential latency
+        - High scale → boost scalable patterns
         """
+        factors = complexity_factors.get("factors", {}) if complexity_factors else {}
+
+        def _factor_level(name: str) -> str:
+            """Get the level (low/medium/high) for a given complexity factor."""
+            entry = factors.get(name, {})
+            if isinstance(entry, dict):
+                return entry.get("level", "medium")
+            return "medium"
+
+        parallelism_level = _factor_level("parallelism_opportunities")
+        data_dep_level = _factor_level("data_dependencies")
+        latency_level = _factor_level("latency_sensitivity")
+        scale_level = _factor_level("scale")
+
         def _score_one(topo: dict[str, Any]) -> dict[str, Any]:
             pattern = topo.get("pattern", "sequential")
             agents = topo.get("agents", [])
@@ -226,6 +304,14 @@ class TopologyEvaluatorRole(AgentRole):
                     "simplicity": {"score": 10, "reasoning": "Simplest possible topology; trivial to implement."},
                     "scalability": {"score": 3, "reasoning": "Cannot add parallel workers; fixed throughput."},
                 }
+                # Complexity-aware adjustments for sequential
+                if data_dep_level == "high":
+                    scores["reliability"]["score"] = min(10, scores["reliability"]["score"] + 1)
+                    scores["reliability"]["reasoning"] += " High data dependencies favor sequential clarity."
+                if latency_level == "high":
+                    scores["latency"]["score"] = max(1, scores["latency"]["score"] - 1)
+                    scores["latency"]["reasoning"] += " High latency sensitivity penalizes sequential chains."
+
             elif pattern == "fan_out_fan_in":
                 scores = {
                     "latency": {"score": 8, "reasoning": "Parallel workers reduce wall-clock time significantly."},
@@ -234,6 +320,14 @@ class TopologyEvaluatorRole(AgentRole):
                     "simplicity": {"score": 7, "reasoning": "Well-understood pattern; clear data flow."},
                     "scalability": {"score": 8, "reasoning": "Easy to add more workers for more sub-tasks."},
                 }
+                # Complexity-aware adjustments for fan_out
+                if parallelism_level == "high":
+                    scores["latency"]["score"] = min(10, scores["latency"]["score"] + 1)
+                    scores["latency"]["reasoning"] += " High parallelism opportunities amplify fan-out benefits."
+                if scale_level == "high":
+                    scores["scalability"]["score"] = min(10, scores["scalability"]["score"] + 1)
+                    scores["scalability"]["reasoning"] += " High-scale tasks benefit from worker elasticity."
+
             elif pattern == "debate_consensus":
                 scores = {
                     "latency": {"score": 3, "reasoning": "Multiple agents run redundantly; no parallelism gain."},
@@ -242,6 +336,11 @@ class TopologyEvaluatorRole(AgentRole):
                     "simplicity": {"score": 5, "reasoning": "Consensus logic adds complexity to result synthesis."},
                     "scalability": {"score": 5, "reasoning": "Adding more debaters improves confidence but increases cost."},
                 }
+                # Complexity-aware adjustments for debate
+                if data_dep_level == "low":
+                    scores["latency"]["score"] = min(10, scores["latency"]["score"] + 1)
+                    scores["latency"]["reasoning"] += " Low data dependencies let debaters work fully in parallel."
+
             elif pattern == "hierarchical":
                 scores = {
                     "latency": {"score": 7, "reasoning": "Two-level parallelism; domains run concurrently."},
@@ -250,11 +349,20 @@ class TopologyEvaluatorRole(AgentRole):
                     "simplicity": {"score": 4, "reasoning": "Most complex topology; harder to debug and maintain."},
                     "scalability": {"score": 9, "reasoning": "Excellent scaling: add domains or workers per domain."},
                 }
+                # Complexity-aware adjustments for hierarchical
+                if scale_level == "high":
+                    scores["scalability"]["score"] = min(10, scores["scalability"]["score"] + 1)
+                    scores["scalability"]["reasoning"] += " High scale demands hierarchical decomposition."
+                if parallelism_level == "high":
+                    scores["latency"]["score"] = min(10, scores["latency"]["score"] + 1)
+                    scores["latency"]["reasoning"] += " Two-level parallelism exploits abundant concurrency."
+
             else:
                 scores = {d: {"score": 5, "reasoning": "Unknown pattern; neutral score."} for d in TopologyEvaluatorRole._DIMENSIONS}
 
             total = sum(s["score"] for s in scores.values())
             return {
+                "_fallback": True,
                 "name": topo.get("name", "Unknown"),
                 "scores": scores,
                 "total_score": total,

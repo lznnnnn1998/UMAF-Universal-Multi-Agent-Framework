@@ -6,17 +6,18 @@ A modular, extensible multi-agent framework supporting autonomous code generatio
 
 UMAF orchestrates multiple autonomous agents that collaborate through structured pipelines. Each agent reasons, uses tools, and produces verifiable output — mimicking the workflow of a human engineering or research team.
 
-### Seven Pipelines
+### Eight Pipelines
 
 | Pipeline | Command | Flow |
 |----------|---------|------|
 | **Coder** | `-m coder` | Coder implements → Reviewer reviews → loop until pass or max cycles |
 | **Research** | `-m research` | Head decomposes topic → Workers research (dependency-ordered) → Reviewer scores → Writer generates LaTeX |
 | **CoderPP** | `-m coderpp` | Multi-file code generation with organizer → workers → reviewer |
-| **Topology** | `-m topology` | Analyzer assesses task → Designer proposes topologies → Evaluator scores → Writer produces spec + report |
+| **Topology** | `-m topology` | Analyzer assesses task → Designer proposes topologies → Evaluator scores (↩ retries if < 35/50) → Writer produces spec + report |
 | **Skill** | `-m skill` | Scanner scans project → 4 parallel detectors → Aggregator deduplicates → Writer produces inventory + report |
-| **Feature** | `-m feature` | Scanner analyzes project → Planner creates plan → Coder implements ↔ Reviewer reviews (max 5 cycles) → Writer produces report |
+| **Feature** | `-m feature` | Scanner analyzes project → Planner creates plan → Coder implements ↔ Reviewer reviews (version-aware, max 5 versions) → Writer produces report |
 | **SelfEvolution** | `-m self_evolution` | Analyzer scans UMAF codebase + logs → Planner creates improvement plan → Coder implements changes ↔ Reviewer verifies (max 3 cycles) → Writer produces evolution report |
+| **Plan** | `-m plan` | Scanner gathers project context → Decomposer builds task tree → 4 parallel analyzers (dependency, risk, resource, cross-cutting) → Writer synthesizes plan spec + report |
 
 ### Two LLM Backends
 
@@ -29,23 +30,23 @@ UMAF orchestrates multiple autonomous agents that collaborate through structured
 
 ```
 main.py
-├── pipeline/ (7 pipeline classes + BasePipeline)
+├── pipeline/ (8 pipeline classes + BasePipeline)
 │   ├── base.py (output dir mgmt, topological sort, parallel agents)
 │   ├── coder.py, research.py, coderpp.py
-│   ├── topology.py, skill.py, feature.py, self_evolution.py
+│   ├── topology.py, skill.py, feature.py, self_evolution.py, plan.py
 │   └── agent.py (autonomous agent loop + AgentRole ABC + CheckpointManager)
 │       ├── llm.py (DeepSeek API / Claude CLI subprocess)
-│       └── tools/ (8 tools + ToolRegistry with 28 role-specific methods)
+│       └── tools/ (8 tools + ToolRegistry with 35 role-specific methods)
 │           ├── registry.py, functions.py, feature_tools.py
 │
-├── self_evolution/ (5 roles)    ├── feature/ (5 roles)
-│   ├── analyzer.py              │   ├── scanner.py
-│   ├── planner.py               │   ├── planner.py
-│   ├── coder.py                 │   ├── coder.py
-│   ├── reviewer.py              │   ├── reviewer.py
-│   └── writer.py                │   └── writer.py
-│                                │
-├── topology/ (4 roles)          ├── research/ (4 roles)
+├── self_evolution/ (5 roles)    ├── feature/ (5 roles)      ├── plan/ (7 roles)
+│   ├── analyzer.py              │   ├── scanner.py          │   ├── scanner.py
+│   ├── planner.py               │   ├── planner.py          │   ├── decomposer.py
+│   ├── coder.py                 │   ├── coder.py            │   ├── dependency.py
+│   ├── reviewer.py              │   ├── reviewer.py         │   ├── risk.py
+│   └── writer.py                │   └── writer.py           │   ├── resource.py
+│                                │                            │   ├── cross_cutting.py
+├── topology/ (4 roles)          ├── research/ (4 roles)     │   └── writer.py
 │   ├── analyzer.py              │   ├── head_agent.py
 │   ├── designer.py              │   ├── worker_agent.py
 │   ├── evaluator.py             │   ├── reviewer_agent.py
@@ -60,7 +61,7 @@ main.py
 └── utils.py
 ```
 
-32 AgentRole subclasses, 7 pipeline classes, 2 backends, 8 tools — all with deterministic fallbacks.
+39 AgentRole subclasses, 8 pipeline classes, 2 backends, 8 tools — all with deterministic fallbacks.
 
 ## Quick Start
 
@@ -91,7 +92,7 @@ python3 main.py -m skill -b claude_cli .
 ### CLI
 
 ```
-python3 main.py [--mode coder|research|coderpp|topology|skill|feature|self_evolution] [--backend deepseek|claude_cli] [--working-dir PATH] [--tools-config PATH] [--target PATH] [--clean] [--yes] "requirement"
+python3 main.py [--mode coder|research|coderpp|topology|skill|feature|self_evolution|plan] [--backend deepseek|claude_cli] [--working-dir PATH] [--tools-config PATH] [--target PATH] [--clean] [--yes] "requirement"
 ```
 
 Requires **Python >= 3.11**.
@@ -99,20 +100,23 @@ Requires **Python >= 3.11**.
 ## Features
 
 - **Autonomous tool use**: agents can read/write files, run shell commands, search the web, fetch URLs, download files, and delegate to nested Claude instances
-- **Multi-agent review loops**: coder↔reviewer (max 5 cycles); 5-dimension research scoring (depth, accuracy, relevance, clarity, originality); topology evaluation (5 dimensions, sorted by total_score)
+- **Multi-agent review loops**: coder↔reviewer (max 5 cycles); 5-dimension research scoring (depth, accuracy, relevance, clarity, originality); topology evaluation (5 dimensions, sorted by total_score, retries if best < 35/50); plan analysis (4 parallel dimensions: dependency, risk, resource, cross-cutting)
 - **Dependency-aware execution**: topological ordering; stop-on-failure blocks downstream tasks; version-bump retries reuse full context via checkpoints
+- **Built-in agent retry**: `AgentRole._MAX_RETRIES=3` — all agents auto-retry with version-bumped checkpoints on failure, no pipeline-level code required
 - **Circuit breakers**: error spiral detection (2 consecutive), force wrap-up at ≤3 steps, mid-loop write reminders, post-loop forced write; pipeline-level timeouts, MD5 dedup, worker retry state machine (max 3 retries, max 4 versions)
-- **Parallel workers**: ThreadPoolExecutor (max 2) with individual 600s timeouts; 4 parallel detectors in Skill pipeline
-- **Fan-out/fan-in topologies**: Skill Summarizer uses domain-parallel detection; Topology Optimizer can design arbitrary agent graphs (sequential, fan_out_fan_in, debate_consensus, hierarchical)
-- **Graceful fallbacks**: every pipeline stage has a deterministic fallback — decomposition, research, scoring, LaTeX, topology analysis, design, evaluation, skill scanning, detection, aggregation
+- **Parallel workers**: ThreadPoolExecutor (max 2) with individual 600s timeouts; 4 parallel detectors in Skill pipeline; 4 parallel analyzers in Plan pipeline
+- **Fan-out/fan-in topologies**: Skill Summarizer uses domain-parallel detection; Plan Pipeline uses 4 parallel analyzers; Topology Optimizer can design arbitrary agent graphs (sequential, fan_out_fan_in, debate_consensus, hierarchical)
+- **Graceful fallbacks**: every pipeline stage has a deterministic fallback — decomposition, research, scoring, LaTeX, topology analysis, design, evaluation, skill scanning, detection, aggregation, plan writing
+- **Guard clauses for resume**: scanner and decomposer nodes skip execution when state already contains results, enabling testability and pipeline resume
 - **Working directory sandboxing**: all file operations scoped to output directories (configurable)
 - **Pre-fetch layer**: arxiv.org and academic content pre-downloaded at framework level for `claude_cli` workers, bypassing subprocess domain restrictions
 - **Conversation logging**: every agent run logged to `agent_log/<name>_<timestamp>.json`
 - **Backend-aware task generation**: `claude_cli` workers use native tools directly (no nested `claude -p`); `deepseek` workers use `call_claude` for reasoning
+- **Default parallel testing**: pytest-xdist `-n auto` enabled by default in `pyproject.toml`
 
 ## Tools
 
-All tools are defined in `tools/registry.py` with implementations in `tools/functions.py`. `ToolRegistry` provides 28 role-specific classmethods — no duplicated tool definitions.
+All tools are defined in `tools/registry.py` with implementations in `tools/functions.py`. `ToolRegistry` provides 35 role-specific classmethods — no duplicated tool definitions. 8 pipelines, 39 AgentRoles, 480 tests.
 
 | Tool | Description | Timeout |
 |------|-------------|---------|
@@ -159,38 +163,42 @@ Organizer → Workers (parallel) → Reviewer — multi-file code generation
 ```
 Reads `.md` and `.tex` spec files. Decomposes into modules, generates code per module, reviews, assembles.
 
-### TopologyPipeline (v1.5)
+### TopologyPipeline (v1.5, v1.9 retry loop)
 ```
 Analyzer (6 complexity factors)
-  └─ Designer (2-4 candidate topologies, 4 patterns)
-      └─ Evaluator (5-dimension scoring, sorted by total_score)
+  └─ Designer (2-4 candidate topologies, 4 patterns) ←──────────┐
+      └─ Evaluator (5-dimension scoring, sorted by total_score) ─┘
+          │                          (retry: max 3, score < 35/50)
           └─ Writer → topology_spec.json + topology_report.md
 ```
 
-Designs optimal agent topology for any task description. Supports 4 patterns: sequential, fan_out_fan_in, debate_consensus, hierarchical. Evaluates on latency, reliability, cost_efficiency, simplicity, scalability.
+Designs optimal agent topology for any task description. Supports 4 patterns: sequential, fan_out_fan_in, debate_consensus, hierarchical. Evaluates on latency, reliability, cost_efficiency, simplicity, scalability. Retries with feedback if best score falls below 35/50.
 
 **Verified:** Produced valid topology design for Skill Summarizer (fan-out/fan-in with domain-specific parallel detectors — an excellent architecture).
 
-### SkillPipeline (v1.5)
+### SkillPipeline (v1.5, v2 evidence-based detectors)
 ```
-Scanner (project scan → project_scan.json)
+Scanner (artifact classification + deep read → artifact_analysis.json)
   └─ 4 parallel detectors (DomainExpertise, TechnicalCraft, Methodology, Rigor)
-      └─ Aggregator (deduplicate, categorize)
+      └─ Aggregator (cross-reference, deduce, skill_graph)
           └─ Writer → skills.json + skills_report.md
 ```
 
-Artifact-agnostic skill detection that works across any project type — software, research papers, documentation. Each detector examines the artifact from a different dimension, with proficiency inferred from evidence depth rather than indicator counting.
+Artifact-agnostic skill detection that works across any project type — software, research papers, documentation, blog articles, datasets. Each detector examines the artifact from a different dimension. v2 uses evidence-based proficiency assessment (depth × consistency × integration) replacing count-based heuristics. 19 domain areas, 25+ modern tools, skill_graph with cross-referenced skills, and artifact-type-aware report structure with Skill Gap Analysis.
 
 **Verified on this repo:** 33 skills across 11 categories — langchain (extensively-used), DeepSeek API (extensively-used), LangGraph (used), ThreadPoolExecutor (used), DuckDuckGo (used), argparse (used), subprocess (extensively-used), Claude CLI (extensively-used), urllib (extensively-used), pytest (detected), dataclasses (extensively-used), etc.
 
-### FeaturePipeline (v1.6)
+### FeaturePipeline (v1.6, v2 multi-coder parallelism)
 ```
-Scanner (project analysis) → Planner (implementation plan) → Coder ↔ Reviewer (max 5 cycles) → Writer (feature report) → END
+Scanner (project analysis) → Planner (implementation plan + sub_tasks)
+    → Coders (topological levels, parallel within level, dependency injection)
+    ↔ Reviewer (cross-coder integration verification, version-aware, max 3 versions)
+    → Writer (feature report) → END
 ```
 
-Adds or modifies code in an existing project. The scanner analyzes the project structure and conventions, the planner creates an implementation plan with both `files_to_create` and `files_to_modify`, the coder implements changes, and the reviewer validates them. Falls back gracefully at every stage.
+Adds or modifies code in an existing project. v2 introduces multi-coder parallelism: the planner decomposes the feature into `sub_tasks` with dependencies, coders execute in topological levels (level[i] receives and verifies level[i-1] outputs), and the reviewer verifies cross-coder integration (dependency consumption, import resolution, interface matching, data flow, integration tests). Falls back to single-coder mode when no sub_tasks. Version-aware retry with `_MAX_CODER_RETRIES=3`. Dependency verification via DEPENDENCY_VERIFIED / DEPENDENCY_ISSUE: tokens.
 
-**Verified:** Created `prime_check.py` + tests in 1 iteration (review passed); created `palindrome.py` + tests in 1 iteration (claude_cli).
+**Verified:** Feature Pipeline v2 self-improvement (6 coders, 4 topological levels, all deps verified, REVIEW_PASSED in 1 iteration). Created `prime_check.py` + tests in 1 iteration (v1).
 
 ### SelfEvolutionPipeline (v1.8)
 ```
@@ -200,6 +208,17 @@ Analyzer (codebase + log scan) → Planner (improvement plan) → Coder ↔ Revi
 UMAF analyzes and improves itself. The analyzer scans the project codebase and agent logs for improvement opportunities, the planner creates an implementation plan, the coder implements changes (detected via git diff), the reviewer verifies by running the test suite, and the writer documents the evolution in a report.
 
 **Safety:** Operates in the current git branch. All changes can be reverted with `git checkout -- .`.
+
+### PlanPipeline (v1.9)
+```
+Scanner (project context) → Decomposer (task tree)
+  └─ 4 parallel analyzers (dependency ‖ risk ‖ resource ‖ cross-cutting)
+      └─ Writer → plan_spec.json + plan_report.md
+```
+
+Transforms natural language task descriptions into comprehensive, structured implementation plans. The pipeline analyses the target project, decomposes the task hierarchically, runs 4 parallel analyses (dependency graph, risk matrix, resource estimates, cross-cutting concerns), and synthesizes machine-readable (`plan_spec.json`) and human-readable (`plan_report.md`) deliverables.
+
+**Verified:** Successfully generated complete implementation plans with dependency graphs, risk matrices, and resource estimates.
 
 ## Configuration
 
@@ -226,6 +245,8 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v2.0** | Jun 2026 | Feature Pipeline v2 (multi-coder parallelism, topological-level execution, dependency injection), Skill Pipeline v2 (evidence-based proficiency, artifact-agnostic, 19 domains, skill_graph), 480 tests |
+| **v1.9** | Jun 2026 | Plan Pipeline (7 AgentRoles), AgentRole built-in retry, Topology designer↔evaluator retry loop, Feature version-aware retry, 403 tests, default parallel testing |
 | **v1.8** | Jun 2026 | Self-Evolution Pipeline (analyzer → planner → coder ↔ reviewer → writer), 5 new AgentRoles, 175 behavioral tests, 379 tests pass |
 | **v1.7** | Jun 2026 | tools_config.json as single source of truth, ~200 lines deduplication, dead code removal, backend-agnostic defaults |
 | **v1.6.1** | Jun 2026 | Dependency injection fixes: Coder (reviewer receives coder_files), Skill (upstream data passed to detectors/aggregator/writer), CoderPP (dependency_outputs injected in workers_node) |
@@ -247,6 +268,7 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 - **Web search fragility**: DuckDuckGo Lite HTML scraping is regex-based and fragile to layout changes
 - **No mid-execution cancellation**: already-running parallel workers can't be cancelled mid-execution
 - **CoderPP worker hang**: workers can get stuck on TaskOutput framework calls when modifying pipeline.py (CoderPP works best for generating new agent role files, less so for pipeline integration)
+- **Plan Pipeline**: needs project context for accurate analysis; decomposer fallback is simpler than LLM-driven task tree
 
 ## Possible Optimizations
 
@@ -296,30 +318,31 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 
 ```
 .
-├── main.py                   # CLI entry point (7 modes)
-├── agent.py                  # Autonomous agent loop + AgentRole ABC + CheckpointManager
+├── main.py                   # CLI entry point (8 modes)
+├── agent.py                  # Autonomous agent loop + AgentRole ABC + CheckpointManager (built-in _MAX_RETRIES)
 ├── llm.py                    # DeepSeek + Claude CLI LLM backends
-├── utils.py                  # Shared helpers (find_matching_delimiter, extract_json_object, extract_json_array, safe_read, scan_review_verdict, serialize_messages)
+├── utils.py                  # Shared helpers (find_matching_delimiter, extract_json_object, extract_json_array, safe_read, scan_review_verdict, serialize_messages, _PROFICIENCY_SCORES)
 ├── claude_config.py          # Claude CLI env injection
 ├── claude_env_sample.json    # Claude CLI credentials (git-ignored)
 ├── claude_env_sample.example.json  # Template for credentials
-├── requirements.txt          # Python dependencies
-├── tools_config.json         # Canonical per-role tool assignments
+├── requirements.txt          # Python dependencies (incl. pytest-xdist, pytest-timeout)
+├── tools_config.json         # Canonical per-role tool assignments (8 pipelines)
 ├── CLAUDE.md                 # Project documentation for AI assistants
 ├── .python-version           # Python 3.11
-├── pipeline/                 # Pipeline classes (9 files)
+├── pipeline/                 # Pipeline classes (10 files)
 │   ├── __init__.py           # Re-exports all pipeline classes
 │   ├── base.py               # BasePipeline + shared helpers (topological sort, parallel agents)
 │   ├── coder.py              # CoderPipeline + CoderRole + ReviewerRole
 │   ├── research.py           # ResearchPipeline (head → workers → reviewer → writer)
 │   ├── coderpp.py            # CoderPPPipeline (head → workers → reviewer → organizer)
-│   ├── topology.py           # TopologyPipeline (analyzer → designer → evaluator → writer)
+│   ├── topology.py           # TopologyPipeline (analyzer → designer ↔ evaluator → writer)
 │   ├── skill.py              # SkillPipeline (scanner → 4 detectors → aggregator → writer)
-│   ├── feature.py            # FeaturePipeline (scanner → planner → coder ↔ reviewer → writer)
-│   └── self_evolution.py     # SelfEvolutionPipeline (analyzer → planner → coder ↔ reviewer → writer)
+│   ├── feature.py            # FeaturePipeline (scanner → planner → coder ↔ reviewer → writer, version-aware)
+│   ├── self_evolution.py     # SelfEvolutionPipeline (analyzer → planner → coder ↔ reviewer → writer)
+│   └── plan.py               # PlanPipeline (scanner → decomposer → 4 parallel analyzers → writer)
 ├── tools/                    # Tool system (4 files)
 │   ├── __init__.py           # Re-exports + auto-applies feature tools
-│   ├── registry.py           # ToolSpec dataclass + ToolRegistry (28 role methods)
+│   ├── registry.py           # ToolSpec dataclass + ToolRegistry (35 role methods)
 │   ├── functions.py          # 8 tool implementations + TOOL_MAP
 │   └── feature_tools.py      # Feature pipeline tool methods
 ├── self_evolution/           # Self-Evolution agent roles (5 files, v1.8)
@@ -334,6 +357,14 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 │   ├── coder.py              # Creates and modifies files, writes tests
 │   ├── reviewer.py           # REVIEW_PASSED/REVIEW_FAILED validation
 │   └── writer.py             # Feature report generation
+├── plan/                     # Plan pipeline agent roles (7 files, v1.9)
+│   ├── scanner.py            # Project context gathering → project_context.json
+│   ├── decomposer.py         # Hierarchical task tree → task_tree.json
+│   ├── dependency.py         # Dependency graph analysis → dependency_graph.json
+│   ├── risk.py               # Risk assessment → risk_matrix.json
+│   ├── resource.py           # Resource estimation → resource_plan.json
+│   ├── cross_cutting.py      # Cross-cutting concerns → cross_cutting_concerns.json
+│   └── writer.py             # Plan spec + report → plan_spec.json + plan_report.md
 ├── research/                 # Research pipeline agent roles (4 files)
 │   ├── head_agent.py         # Topic decomposition (2-8 sub-topics)
 │   ├── worker_agent.py       # Dependency-ordered research + pre-fetch layer
@@ -346,25 +377,26 @@ Set `CLAUDE_ENV_PATH` env var for a custom config path.
 │   └── organizer.py          # Post-generation organization
 ├── topology/                 # Topology Optimizer agent roles (4 files, v1.5)
 │   ├── analyzer.py           # Task complexity analysis (6 factors)
-│   ├── designer.py           # Candidate topology generation (4 patterns)
-│   ├── evaluator.py          # 5-dimension scoring, sorted ranking
+│   ├── designer.py           # Candidate topology generation (4 patterns), accepts evaluation_feedback
+│   ├── evaluator.py          # 5-dimension scoring, sorted ranking, routes retries
 │   └── writer.py             # topology_spec.json + topology_report.md
 ├── skill/                    # Skill Summarizer agent roles (4 files, v1.5)
 │   ├── scanner.py            # Artifact classification + deep content reading
 │   ├── detectors.py          # 4 artifact-agnostic detectors (DomainExpertise, TechnicalCraft, Methodology, Rigor)
 │   ├── aggregator.py         # Cross-domain skill dedup + categorization
 │   └── writer.py             # skills.json + skills_report.md
-└── test/                     # Test suite (10 files, 379 tests)
+└── test/                     # Test suite (10 files, 480 tests)
     ├── conftest.py           # Shared fixtures, config loading, mock helpers
     ├── test_smoke.py         # Core agent, pipeline, ToolRegistry, checkpoint tests
     ├── test_pipeline.py      # BasePipeline, topological levels, dependency validation
     ├── test_coder.py         # CoderPipeline, CoderRole, ReviewerRole, graph nodes (27 tests)
     ├── test_research.py      # ResearchPipeline, decomposer, reviewer, writer, resume (62 tests)
     ├── test_coderpp.py       # CoderPPPipeline, decomposer, observer, organizer, workers (58 tests)
-    ├── test_topology.py      # Topology Pipeline roles, state, fallbacks
+    ├── test_topology.py      # Topology Pipeline roles, state, retry loop, fallbacks
     ├── test_skill.py         # Skill Pipeline v2 roles, detectors, fallback chain
-    ├── test_feature.py       # Feature Pipeline roles, state, mock E2E
-    └── test_self_evolution.py # SelfEvolutionPipeline, 5 roles, graph nodes (49 tests)
+    ├── test_feature.py       # Feature Pipeline roles, state, versioning, mock E2E
+    ├── test_self_evolution.py # SelfEvolutionPipeline, 5 roles, graph nodes (49 tests)
+    └── test_plan.py          # Plan Pipeline, 7 roles, guard-aware integration tests
 ```
 
 ## Example Output

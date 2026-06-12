@@ -22,18 +22,26 @@ class TopologyState(TypedDict):
     evaluated_topologies: list[dict[str, Any]]
     topology_spec: dict[str, Any]
     status: str
+    iteration: int
+    evaluation_feedback: str
 
 
 class TopologyPipeline(BasePipeline):
     """Analyze task → Design topologies → Evaluate → Write final spec.
 
-    A linear 4-stage pipeline with no retry loops. Each stage is an
-    AgentRole subclass: TopologyAnalyzerRole, TopologyDesignerRole,
-    TopologyEvaluatorRole, TopologyWriterRole.
+    A 4-stage pipeline with an evaluator→designer retry loop: if all
+    evaluated topologies score below 35/50, the evaluator routes back to
+    the designer with feedback identifying low-scoring dimensions, so the
+    designer can propose improved topologies.  Max 3 retries (designer runs
+    up to 4 times total: initial + 3 retries), after which the pipeline
+    proceeds to the writer regardless.
     """
 
     name = "topology"
     default_output_dir = "topology_output"
+
+    _MAX_RETRIES = 3
+    _SCORE_THRESHOLD = 35
 
     def _decompose(self, input_spec: str) -> list[dict[str, Any]]:
         """No traditional decomposition — the pipeline graph handles everything."""
@@ -53,6 +61,8 @@ class TopologyPipeline(BasePipeline):
             "evaluated_topologies": [],
             "topology_spec": {},
             "status": "initialized",
+            "iteration": 0,
+            "evaluation_feedback": "",
         }
 
     def _build_graph(self):
@@ -76,13 +86,20 @@ class TopologyPipeline(BasePipeline):
 
         # ── Designer node ─────────────────────────────────────────────
         def _designer_node(state: TopologyState) -> dict:
-            print("\n[designer] Proposing candidate topologies...")
+            iteration = state.get("iteration", 0)
+            feedback = state.get("evaluation_feedback", "")
+            if iteration > 0:
+                print(f"\n[designer] Retry iteration {iteration}/{TopologyPipeline._MAX_RETRIES} — improving topologies...")
+                print(f"  Feedback: {feedback[:200]}")
+            else:
+                print("\n[designer] Proposing candidate topologies...")
             try:
                 role = TopologyDesignerRole()
                 topologies = role.execute(
                     working_dir=working_dir, backend=backend,
                     complexity_factors=state.get("complexity_factors", {}),
                     input_spec=state["input_spec"],
+                    evaluation_feedback=state.get("evaluation_feedback", ""),
                 )
                 print(f"  Proposed {len(topologies)} candidate(s)")
                 for t in topologies:
@@ -100,9 +117,44 @@ class TopologyPipeline(BasePipeline):
                 evaluated = role.execute(
                     working_dir=working_dir, backend=backend,
                     candidate_topologies=state.get("candidate_topologies", []),
+                    complexity_factors=state.get("complexity_factors", {}),
                 )
                 for e in evaluated:
                     print(f"  {e.get('name', '?')}: {e.get('total_score', 0)}/50")
+
+                # Compute best score
+                best_score = max(
+                    (t.get("total_score", 0) for t in evaluated),
+                    default=0,
+                )
+                iteration = state.get("iteration", 0)
+                print(f"  Best score: {best_score}/50 (iteration {iteration}/{TopologyPipeline._MAX_RETRIES})")
+
+                # Retry logic: if best score is below threshold and we have retries left
+                if best_score < TopologyPipeline._SCORE_THRESHOLD and iteration < TopologyPipeline._MAX_RETRIES:
+                    # Build evaluation feedback identifying low-scoring dimensions
+                    low_dims: list[str] = []
+                    if evaluated:
+                        best_eval = evaluated[0]
+                        scores = best_eval.get("scores", {})
+                        for dim, details in scores.items():
+                            s = details.get("score", 0) if isinstance(details, dict) else 0
+                            if s < 7:
+                                low_dims.append(f"{dim}={s}")
+                    feedback = (
+                        f"Best topology scored {best_score}/50 (threshold: "
+                        f"{TopologyPipeline._SCORE_THRESHOLD}). Low-scoring "
+                        f"dimensions: {', '.join(low_dims) if low_dims else 'none strongly low'}. "
+                        f"Please redesign topologies to address these weaknesses."
+                    )
+                    print(f"  Score below threshold — routing back to designer")
+                    return {
+                        "status": "designer_retry",
+                        "iteration": iteration + 1,
+                        "evaluation_feedback": feedback,
+                        "evaluated_topologies": evaluated,
+                    }
+
                 return {"evaluated_topologies": evaluated, "status": "evaluated"}
             except Exception as e:
                 print(f"  [evaluator] Failed: {e}")
@@ -141,6 +193,7 @@ class TopologyPipeline(BasePipeline):
             "initialized": "analyzer",
             "analyzed": "designer",
             "designed": "evaluator",
+            "designer_retry": "designer",
             "evaluated": "writer",
             "written": END,
         }
